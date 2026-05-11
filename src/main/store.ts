@@ -14,8 +14,16 @@ export interface Profile {
   activePaneId: string
 }
 
+export interface QuickText {
+  id: string
+  label: string
+  text: string
+  order: number
+}
+
 interface StoreSchema {
   profiles: Profile[]
+  quickTexts: QuickText[]
 }
 
 // Legacy types for migration
@@ -30,7 +38,7 @@ export class ProfileStore {
 
   constructor() {
     this.store = new Store<StoreSchema>({
-      defaults: { profiles: [] },
+      defaults: { profiles: [], quickTexts: [] },
     })
     this.migrate()
   }
@@ -119,5 +127,32 @@ export class ProfileStore {
 
   getProfile(id: string): Profile | undefined {
     return this.store.get('profiles').find((p) => p.id === id)
+  }
+
+  // Quick Text methods
+  getAllQuickTexts(): QuickText[] {
+    return [...this.store.get('quickTexts')].sort((a, b) => a.order - b.order)
+  }
+
+  addQuickText(id: string, label: string, text: string): QuickText {
+    const quickTexts = this.store.get('quickTexts')
+    const newItem: QuickText = { id, label, text, order: quickTexts.length }
+    quickTexts.push(newItem)
+    this.store.set('quickTexts', quickTexts)
+    return newItem
+  }
+
+  updateQuickText(id: string, data: Partial<{ label: string; text: string }>): void {
+    const quickTexts = this.store.get('quickTexts')
+    const idx = quickTexts.findIndex((q) => q.id === id)
+    if (idx !== -1) {
+      quickTexts[idx] = { ...quickTexts[idx], ...data }
+      this.store.set('quickTexts', quickTexts)
+    }
+  }
+
+  removeQuickText(id: string): void {
+    const quickTexts = this.store.get('quickTexts').filter((q) => q.id !== id)
+    this.store.set('quickTexts', quickTexts)
   }
 }

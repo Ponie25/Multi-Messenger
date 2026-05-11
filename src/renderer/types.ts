@@ -11,6 +11,13 @@ export interface Profile {
   activePaneId: string
 }
 
+export interface QuickText {
+  id: string
+  label: string
+  text: string
+  order: number
+}
+
 export interface ElectronAPI {
   // Profiles
   getProfiles(): Promise<Profile[]>
@@ -28,6 +35,16 @@ export interface ElectronAPI {
   setActivePane(profileId: string, paneId: string): Promise<void>
   goBack(profileId: string, paneId: string): Promise<void>
   goForward(profileId: string, paneId: string): Promise<void>
+
+  // Sidebar
+  resizeSidebar(data: { rightSidebarWidth: number }): void
+
+  // Quick Text
+  quickTextGetAll(): Promise<QuickText[]>
+  quickTextAdd(label: string, text: string): Promise<QuickText>
+  quickTextUpdate(id: string, data: Partial<{ label: string; text: string }>): Promise<void>
+  quickTextRemove(id: string): Promise<void>
+  quickTextInject(text: string): Promise<{ success: boolean; error?: string }>
 
   // Events
   onPaneUrlChanged(callback: (data: { profileId: string; paneId: string; url: string }) => void): () => void

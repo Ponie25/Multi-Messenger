@@ -19,6 +19,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   goBack: (profileId: string, paneId: string) => ipcRenderer.invoke('pane:goBack', profileId, paneId),
   goForward: (profileId: string, paneId: string) => ipcRenderer.invoke('pane:goForward', profileId, paneId),
 
+  // Sidebar
+  resizeSidebar: (data: { rightSidebarWidth: number }) => {
+    ipcRenderer.send('sidebar:resize', data)
+  },
+
+  // Quick Text
+  quickTextGetAll: () => ipcRenderer.invoke('quicktext:getAll'),
+  quickTextAdd: (label: string, text: string) => ipcRenderer.invoke('quicktext:add', label, text),
+  quickTextUpdate: (id: string, data: Partial<{ label: string; text: string }>) =>
+    ipcRenderer.invoke('quicktext:update', id, data),
+  quickTextRemove: (id: string) => ipcRenderer.invoke('quicktext:remove', id),
+  quickTextInject: (text: string) => ipcRenderer.invoke('quicktext:inject', text),
+
   // Events
   onPaneUrlChanged: (callback: (data: { profileId: string; paneId: string; url: string }) => void) => {
     const handler = (_event: any, data: any) => callback(data)

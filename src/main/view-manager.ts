@@ -16,11 +16,17 @@ export class ViewManager {
   private win: BrowserWindow
   private paneViews: Map<string, Map<string, WebContentsView>> = new Map()
   private activeProfileId: string | null = null
+  private rightSidebarWidth: number = 36
   private onUrlChanged: ((profileId: string, paneId: string, url: string) => void) | null = null
   private onNavState: ((profileId: string, paneId: string, canGoBack: boolean, canGoForward: boolean) => void) | null = null
 
   constructor(win: BrowserWindow) {
     this.win = win
+  }
+
+  setRightSidebarWidth(width: number): void {
+    this.rightSidebarWidth = width
+    this.updateActiveBounds()
   }
 
   setUrlChangedHandler(handler: (profileId: string, paneId: string, url: string) => void): void {
@@ -112,7 +118,7 @@ export class ViewManager {
     if (!views || views.size === 0) return
 
     const [windowWidth, windowHeight] = this.win.getContentSize()
-    const totalWidth = windowWidth - SIDEBAR_WIDTH
+    const totalWidth = windowWidth - SIDEBAR_WIDTH - this.rightSidebarWidth
     const paneCount = views.size
     const paneWidth = Math.floor(totalWidth / paneCount)
 
@@ -207,5 +213,13 @@ export class ViewManager {
 
   getActiveProfileId(): string | null {
     return this.activeProfileId
+  }
+
+  getActivePaneView(): WebContentsView | undefined {
+    if (!this.activeProfileId) return undefined
+    const profileViews = this.paneViews.get(this.activeProfileId)
+    if (!profileViews) return undefined
+    // Return the first view (active pane concept is managed by store, here we just pick first)
+    return profileViews.values().next().value
   }
 }

@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { ThemeProvider } from './components/ThemeProvider'
 import { Sidebar } from './components/Sidebar'
 import { ContentArea } from './components/ContentArea'
+import { RightSidebar, RIGHT_SIDEBAR_COLLAPSED_WIDTH, RIGHT_SIDEBAR_EXPANDED_WIDTH } from './components/RightSidebar'
+import { QuickTextPanel } from './components/QuickTextPanel'
 import type { Profile } from './types'
 import './index.css'
 
@@ -10,6 +12,11 @@ export default function App() {
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null)
   const [paneUrls, setPaneUrls] = useState<Record<string, string>>({})
   const [paneNavState, setPaneNavState] = useState<Record<string, { canGoBack: boolean; canGoForward: boolean }>>({})
+  const [rightSidebarOpen, setRightSidebarOpen] = useState(false)
+
+  useEffect(() => {
+    window.electronAPI.resizeSidebar({ rightSidebarWidth: RIGHT_SIDEBAR_COLLAPSED_WIDTH })
+  }, [])
 
   useEffect(() => {
     const api = window.electronAPI
@@ -150,6 +157,26 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
 
+  const handleToggleRightSidebar = useCallback(() => {
+    const next = !rightSidebarOpen
+    setRightSidebarOpen(next)
+    window.electronAPI.resizeSidebar({
+      rightSidebarWidth: next ? RIGHT_SIDEBAR_EXPANDED_WIDTH : RIGHT_SIDEBAR_COLLAPSED_WIDTH,
+    })
+  }, [rightSidebarOpen])
+
+  // Cmd/Ctrl+B to toggle right sidebar
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
+        e.preventDefault()
+        handleToggleRightSidebar()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [handleToggleRightSidebar])
+
   return (
     <ThemeProvider>
       <div className="flex h-screen w-screen overflow-hidden bg-background">
@@ -184,6 +211,9 @@ export default function App() {
             </div>
           )}
         </div>
+        <RightSidebar isOpen={rightSidebarOpen} onToggle={handleToggleRightSidebar}>
+          <QuickTextPanel />
+        </RightSidebar>
       </div>
     </ThemeProvider>
   )

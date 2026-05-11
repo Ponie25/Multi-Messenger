@@ -187,4 +187,57 @@ function registerIpcHandlers() {
   ipcMain.handle('pane:goForward', (_event, profileId: string, paneId: string) => {
     viewManager?.goForward(profileId, paneId)
   })
+
+  // Sidebar resize
+  ipcMain.on('sidebar:resize', (_event, data: { rightSidebarWidth: number }) => {
+    viewManager?.setRightSidebarWidth(data.rightSidebarWidth)
+  })
+
+  // Quick Text CRUD
+  ipcMain.handle('quicktext:getAll', () => profileStore.getAllQuickTexts())
+
+  ipcMain.handle('quicktext:add', (_event, label: string, text: string) => {
+    const id = randomUUID()
+    return profileStore.addQuickText(id, label, text)
+  })
+
+  ipcMain.handle('quicktext:update', (_event, id: string, data: Partial<{ label: string; text: string }>) => {
+    profileStore.updateQuickText(id, data)
+  })
+
+  ipcMain.handle('quicktext:remove', (_event, id: string) => {
+    profileStore.removeQuickText(id)
+  })
+
+  // Quick Text injection into active pane
+  ipcMain.handle('quicktext:inject', async (_event, text: string) => {
+    if (!viewManager) return { success: false, error: 'No view manager' }
+    const view = viewManager.getActivePaneView()
+    if (!view) return { success: false, error: 'No active pane' }
+
+    try {
+      const result = await view.webContents.executeJavaScript(`
+        (function() {
+          const el = document.querySelector('[contenteditable="true"][role="textbox"]')
+            || document.querySelector('[contenteditable][role="textbox"]')
+            || document.querySelector('div[contenteditable="true"]')
+            || document.querySelector('textarea')
+            || document.querySelector('input[type="text"]');
+          if (!el) return { success: false, error: 'Could not find text input' };
+          el.focus();
+          if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+            el.value = ${JSON.stringify(text)};
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+          } else {
+            el.textContent = ${JSON.stringify(text)};
+            el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ${JSON.stringify(text)} }));
+          }
+          return { success: true };
+        })()
+      `)
+      return result
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Injection failed' }
+    }
+  })
 }
