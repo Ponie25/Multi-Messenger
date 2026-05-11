@@ -1,48 +1,38 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
-// shell.ts — preload for the main BrowserWindow (React renderer)
-// Exposes safe IPC bridge to renderer process
-
 contextBridge.exposeInMainWorld('electronAPI', {
-  // Account management
-  getAccounts: () => ipcRenderer.invoke('accounts:get'),
-  addAccount: () => ipcRenderer.invoke('account:add'),
-  switchAccount: (accountId: string) => ipcRenderer.invoke('account:switch', accountId),
-  removeAccount: (accountId: string) => ipcRenderer.invoke('account:remove', accountId),
-  toggleNotifications: (accountId: string, enabled: boolean) =>
-    ipcRenderer.invoke('account:toggleNotifications', accountId, enabled),
-  reorderAccounts: (orderedIds: string[]) => ipcRenderer.invoke('account:reorder', orderedIds),
+  // Profiles
+  getProfiles: () => ipcRenderer.invoke('profiles:get'),
+  addProfile: () => ipcRenderer.invoke('profile:add'),
+  switchProfile: (profileId: string) => ipcRenderer.invoke('profile:switch', profileId),
+  removeProfile: (profileId: string) => ipcRenderer.invoke('profile:remove', profileId),
+  renameProfile: (profileId: string, name: string) => ipcRenderer.invoke('profile:rename', profileId, name),
+  reorderProfiles: (orderedIds: string[]) => ipcRenderer.invoke('profile:reorder', orderedIds),
+  showProfileContextMenu: (profileId: string) => ipcRenderer.invoke('profile:contextMenu', profileId),
 
-  // Sidebar
-  resizeSidebar: (data: { rightSidebarWidth: number }) => {
-    ipcRenderer.send('sidebar:resize', data)
+  // Panes
+  navigatePane: (profileId: string, paneId: string, url: string) =>
+    ipcRenderer.invoke('pane:navigate', profileId, paneId, url),
+  addPane: (profileId: string) => ipcRenderer.invoke('pane:add', profileId),
+  removePane: (profileId: string, paneId: string) => ipcRenderer.invoke('pane:remove', profileId, paneId),
+  setActivePane: (profileId: string, paneId: string) => ipcRenderer.invoke('pane:setActive', profileId, paneId),
+  goBack: (profileId: string, paneId: string) => ipcRenderer.invoke('pane:goBack', profileId, paneId),
+  goForward: (profileId: string, paneId: string) => ipcRenderer.invoke('pane:goForward', profileId, paneId),
+
+  // Events
+  onPaneUrlChanged: (callback: (data: { profileId: string; paneId: string; url: string }) => void) => {
+    const handler = (_event: any, data: any) => callback(data)
+    ipcRenderer.on('pane:urlChanged', handler)
+    return () => ipcRenderer.removeListener('pane:urlChanged', handler)
   },
-
-  // Context menu (native)
-  showAccountContextMenu: (accountId: string, notificationsEnabled: boolean) =>
-    ipcRenderer.invoke('account:contextMenu', accountId, notificationsEnabled),
-
-  // Quick Text
-  quickTextGetAll: () => ipcRenderer.invoke('quicktext:getAll'),
-  quickTextAdd: (label: string, text: string) => ipcRenderer.invoke('quicktext:add', label, text),
-  quickTextUpdate: (id: string, data: Partial<{ label: string; text: string }>) =>
-    ipcRenderer.invoke('quicktext:update', id, data),
-  quickTextRemove: (id: string) => ipcRenderer.invoke('quicktext:remove', id),
-  quickTextInject: (text: string) => ipcRenderer.invoke('quicktext:inject', text),
-
-  // Event listeners
-  onBadgeUpdate: (callback: (data: { accountId: string; count: number }) => void) => {
-    ipcRenderer.on('badge:update', (_event, data) => callback(data))
+  onPaneNavState: (callback: (data: { profileId: string; paneId: string; canGoBack: boolean; canGoForward: boolean }) => void) => {
+    const handler = (_event: any, data: any) => callback(data)
+    ipcRenderer.on('pane:navState', handler)
+    return () => ipcRenderer.removeListener('pane:navState', handler)
   },
-  onAccountInfoUpdated: (callback: (data: { accountId: string; name: string; avatarUrl: string }) => void) => {
-    ipcRenderer.on('account:infoUpdated', (_event, data) => callback(data))
-  },
-  onAccountSwitch: (callback: (accountId: string) => void) => {
-    ipcRenderer.on('account:switch', (_event, accountId) => callback(accountId))
-  },
-
-  // Cleanup
-  removeAllListeners: (channel: string) => {
-    ipcRenderer.removeAllListeners(channel)
+  onProfileSwitch: (callback: (profileId: string) => void) => {
+    const handler = (_event: any, profileId: string) => callback(profileId)
+    ipcRenderer.on('profile:switch', handler)
+    return () => ipcRenderer.removeListener('profile:switch', handler)
   },
 })

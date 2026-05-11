@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react'
+import React, { useCallback, useState } from 'react'
 import {
   DndContext,
   closestCenter,
@@ -17,39 +17,42 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { Sun, Moon, Plus } from 'lucide-react'
-import { AccountAvatar } from './AccountAvatar'
+import { ProfileAvatar } from './ProfileAvatar'
 import { Button } from './ui/button'
 import { useTheme } from './ThemeProvider'
-import type { Account } from '../types'
+import type { Profile } from '../types'
 
 interface SidebarProps {
-  accounts: Account[]
-  activeAccountId: string | null
-  badges: Record<string, number>
-  onAddAccount: () => void
-  onSwitchAccount: (accountId: string) => void
-  onRemoveAccount: (accountId: string) => void
-  onToggleNotifications: (accountId: string, enabled: boolean) => void
+  profiles: Profile[]
+  activeProfileId: string | null
+  onAddProfile: () => void
+  onSwitchProfile: (profileId: string) => void
+  onRemoveProfile: (profileId: string) => void
+  onRenameProfile: (profileId: string, name: string) => void
   onReorder: (orderedIds: string[]) => void
 }
 
-interface SortableAccountItemProps {
-  account: Account
+interface SortableProfileItemProps {
+  profile: Profile
   isActive: boolean
-  badgeCount: number
+  isRenaming: boolean
   onSwitch: () => void
   onContextMenu: (e: React.MouseEvent) => void
+  onRenameSubmit: (name: string) => void
+  onRenameCancel: () => void
 }
 
-function SortableAccountItem({
-  account,
+function SortableProfileItem({
+  profile,
   isActive,
-  badgeCount,
+  isRenaming,
   onSwitch,
   onContextMenu,
-}: SortableAccountItemProps) {
+  onRenameSubmit,
+  onRenameCancel,
+}: SortableProfileItemProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: account.id,
+    id: profile.id,
   })
 
   const style: React.CSSProperties = {
@@ -64,7 +67,7 @@ function SortableAccountItem({
         {...attributes}
         {...listeners}
         className="absolute -left-1 top-1/2 -translate-y-1/2 w-3 h-8 flex items-center justify-center cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-40 transition-opacity"
-        aria-label={`Drag to reorder ${account.name}`}
+        aria-label={`Drag to reorder ${profile.name}`}
         title="Drag to reorder"
       >
         <svg viewBox="0 0 6 14" className="w-2 h-4 fill-current text-muted-foreground" aria-hidden="true">
@@ -73,113 +76,140 @@ function SortableAccountItem({
           <circle cx="2" cy="12" r="1.5" />
         </svg>
       </div>
-      <AccountAvatar
-          name={account.name}
-          avatarUrl={account.avatarUrl}
+      {isRenaming ? (
+        <RenameInput
+          defaultValue={profile.name}
+          onSubmit={onRenameSubmit}
+          onCancel={onRenameCancel}
+        />
+      ) : (
+        <ProfileAvatar
+          name={profile.name}
           isActive={isActive}
-          badgeCount={badgeCount}
-          notificationsEnabled={account.notificationsEnabled}
           onClick={onSwitch}
           onContextMenu={onContextMenu}
         />
+      )}
     </div>
   )
 }
 
+function RenameInput({
+  defaultValue,
+  onSubmit,
+  onCancel,
+}: {
+  defaultValue: string
+  onSubmit: (name: string) => void
+  onCancel: () => void
+}) {
+  const [value, setValue] = useState(defaultValue)
+
+  return (
+    <input
+      autoFocus
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') onSubmit(value.trim() || defaultValue)
+        if (e.key === 'Escape') onCancel()
+      }}
+      onBlur={() => onSubmit(value.trim() || defaultValue)}
+      className="w-10 h-10 rounded-full text-center text-xs bg-muted border border-input outline-none focus:ring-1 focus:ring-ring"
+    />
+  )
+}
+
 export function Sidebar({
-  accounts,
-  activeAccountId,
-  badges,
-  onAddAccount,
-  onSwitchAccount,
-  onRemoveAccount,
-  onToggleNotifications,
+  profiles,
+  activeProfileId,
+  onAddProfile,
+  onSwitchProfile,
+  onRemoveProfile,
+  onRenameProfile,
   onReorder,
 }: SidebarProps) {
-  const { theme, resolvedTheme, setTheme } = useTheme()
+  const { resolvedTheme, setTheme } = useTheme()
+  const [renamingId, setRenamingId] = useState<string | null>(null)
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   )
 
-  const handleContextMenu = useCallback(async (e: React.MouseEvent, accountId: string) => {
+  const handleContextMenu = useCallback(async (e: React.MouseEvent, profileId: string) => {
     e.preventDefault()
-    const account = accounts.find((a) => a.id === accountId)
-    if (!account) return
-    const result = await window.electronAPI.showAccountContextMenu(accountId, account.notificationsEnabled)
+    const result = await window.electronAPI.showProfileContextMenu(profileId)
     if (result.action === 'remove') {
-      onRemoveAccount(accountId)
-    } else if (result.action === 'toggleNotifications') {
-      onToggleNotifications(accountId, !account.notificationsEnabled)
+      onRemoveProfile(profileId)
+    } else if (result.action === 'rename') {
+      setRenamingId(profileId)
     }
-  }, [accounts, onRemoveAccount, onToggleNotifications])
+  }, [onRemoveProfile])
 
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       const { active, over } = event
       if (over && active.id !== over.id) {
-        const oldIndex = accounts.findIndex((a) => a.id === active.id)
-        const newIndex = accounts.findIndex((a) => a.id === over.id)
-        const reordered = arrayMove(accounts, oldIndex, newIndex)
-        onReorder(reordered.map((a) => a.id))
+        const oldIndex = profiles.findIndex((p) => p.id === active.id)
+        const newIndex = profiles.findIndex((p) => p.id === over.id)
+        const reordered = arrayMove(profiles, oldIndex, newIndex)
+        onReorder(reordered.map((p) => p.id))
       }
     },
-    [accounts, onReorder]
+    [profiles, onReorder]
   )
 
   const isDark = resolvedTheme === 'dark'
 
-  const toggleTheme = () => {
-    setTheme(isDark ? 'light' : 'dark')
-  }
-
   return (
     <nav
-        className="flex flex-col items-center py-3 gap-3 bg-card border-r border-border"
-        style={{ width: 72, minWidth: 72, maxWidth: 72 }}
-        aria-label="Account switcher"
+      className="flex flex-col items-center py-3 gap-3 bg-card border-r border-border"
+      style={{ width: 72, minWidth: 72, maxWidth: 72 }}
+      aria-label="Profile switcher"
+    >
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <SortableContext items={profiles.map((p) => p.id)} strategy={verticalListSortingStrategy}>
+          <div className="flex flex-col gap-3 flex-1 w-full items-center overflow-y-auto scrollbar-hide">
+            {profiles.map((profile) => (
+              <SortableProfileItem
+                key={profile.id}
+                profile={profile}
+                isActive={profile.id === activeProfileId}
+                isRenaming={profile.id === renamingId}
+                onSwitch={() => onSwitchProfile(profile.id)}
+                onContextMenu={(e) => handleContextMenu(e, profile.id)}
+                onRenameSubmit={(name) => {
+                  onRenameProfile(profile.id, name)
+                  setRenamingId(null)
+                }}
+                onRenameCancel={() => setRenamingId(null)}
+              />
+            ))}
+          </div>
+        </SortableContext>
+      </DndContext>
+
+      <Button
+        variant="ghost"
+        size="icon"
+        onClick={() => setTheme(isDark ? 'light' : 'dark')}
+        className="w-10 h-10 rounded-full text-muted-foreground hover:text-foreground"
+        aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
       >
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-          <SortableContext items={accounts.map((a) => a.id)} strategy={verticalListSortingStrategy}>
-            <div className="flex flex-col gap-3 flex-1 w-full items-center overflow-y-auto scrollbar-hide">
-              {accounts.map((account) => (
-                <SortableAccountItem
-                  key={account.id}
-                  account={account}
-                  isActive={account.id === activeAccountId}
-                  badgeCount={badges[account.id] ?? 0}
-                  onSwitch={() => onSwitchAccount(account.id)}
-                  onContextMenu={(e) => handleContextMenu(e, account.id)}
-                />
-              ))}
-            </div>
-          </SortableContext>
-        </DndContext>
+        {isDark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+      </Button>
 
-        {/* Theme toggle */}
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={toggleTheme}
-          className="w-10 h-10 rounded-full text-muted-foreground hover:text-foreground"
-          aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
-          title={isDark ? "Switch to light mode" : "Switch to dark mode"}
-        >
-          {isDark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
-        </Button>
-
-        {/* Add account button */}
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={onAddAccount}
-          className="w-12 h-12 rounded-full text-muted-foreground hover:text-foreground hover:bg-accent"
-          aria-label="Add account"
-          title="Add account"
-        >
-          <Plus className="h-6 w-6" />
-        </Button>
-      </nav>
+      <Button
+        variant="ghost"
+        size="icon"
+        onClick={onAddProfile}
+        className="w-12 h-12 rounded-full text-muted-foreground hover:text-foreground hover:bg-accent"
+        aria-label="Add profile"
+        title="Add profile"
+      >
+        <Plus className="h-6 w-6" />
+      </Button>
+    </nav>
   )
 }

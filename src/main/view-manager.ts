@@ -1,7 +1,7 @@
 import { BrowserWindow, WebContentsView, session } from 'electron'
 import path from 'path'
-import { Account } from './store'
-import { setNotificationPermission } from './permissions'
+import { Profile, Pane } from './store'
+import { SIDEBAR_WIDTH, ADDRESS_BAR_HEIGHT } from '../shared/constants'
 
 const CHROME_UA_MAC =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
@@ -14,116 +14,198 @@ function getChromeUA(): string {
 
 export class ViewManager {
   private win: BrowserWindow
-  private sidebarWidth: number
-  private rightSidebarWidth: number = 36 // collapsed strip width
-  private views: Map<string, WebContentsView> = new Map()
-  private activeAccountId: string | null = null
+  private paneViews: Map<string, Map<string, WebContentsView>> = new Map()
+  private activeProfileId: string | null = null
+  private onUrlChanged: ((profileId: string, paneId: string, url: string) => void) | null = null
+  private onNavState: ((profileId: string, paneId: string, canGoBack: boolean, canGoForward: boolean) => void) | null = null
 
-  constructor(win: BrowserWindow, sidebarWidth: number) {
+  constructor(win: BrowserWindow) {
     this.win = win
-    this.sidebarWidth = sidebarWidth
   }
 
-  setRightSidebarWidth(width: number): void {
-    this.rightSidebarWidth = width
-    this.updateActiveBounds()
+  setUrlChangedHandler(handler: (profileId: string, paneId: string, url: string) => void): void {
+    this.onUrlChanged = handler
   }
 
-  // Task 4.2 — createView
-  async createView(account: Account): Promise<WebContentsView> {
-    const partition = `persist:account-${account.id}`
-    const accountSession = session.fromPartition(partition)
+  setNavStateHandler(handler: (profileId: string, paneId: string, canGoBack: boolean, canGoForward: boolean) => void): void {
+    this.onNavState = handler
+  }
 
-    // Set Chrome user agent on session level
-    accountSession.setUserAgent(getChromeUA())
+  async createProfile(profile: Profile): Promise<void> {
+    const profileViews = new Map<string, WebContentsView>()
+    this.paneViews.set(profile.id, profileViews)
 
-    // Set notification permission based on account setting
-    setNotificationPermission(partition, account.notificationsEnabled)
+    for (const pane of profile.panes) {
+      const view = this.createPaneView(profile.id, pane)
+      profileViews.set(pane.id, view)
+    }
+  }
 
-    const preloadPath = path.join(__dirname, '../preload/webview.js')
+  private createPaneView(profileId: string, pane: Pane): WebContentsView {
+    const partition = `persist:profile-${profileId}`
+    const profileSession = session.fromPartition(partition)
+    profileSession.setUserAgent(getChromeUA())
+
+    const preloadPath = path.join(__dirname, '../preload/pane.js')
 
     const view = new WebContentsView({
       webPreferences: {
-        session: accountSession,
+        session: profileSession,
         preload: preloadPath,
         contextIsolation: true,
         nodeIntegration: false,
-        additionalArguments: [`--account-id=${account.id}`],
       },
     })
 
-    // Inject account-info script after page loads (account-info.ts handles this via preload)
-
     this.win.contentView.addChildView(view)
-    view.webContents.loadURL('https://www.facebook.com/messages')
-
-    this.views.set(account.id, view)
-
-    // Hide by default — showView will make it visible
     view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+
+    if (pane.url) {
+      view.webContents.loadURL(pane.url)
+    }
+
+    // Track navigation events
+    view.webContents.on('did-navigate', () => {
+      this.emitNavEvents(profileId, pane.id, view)
+    })
+    view.webContents.on('did-navigate-in-page', () => {
+      this.emitNavEvents(profileId, pane.id, view)
+    })
+
+    // Handle window.open — load in same view
+    view.webContents.setWindowOpenHandler(({ url }) => {
+      view.webContents.loadURL(url)
+      return { action: 'deny' }
+    })
 
     return view
   }
 
-  // Task 4.3 — showView
-  showView(accountId: string): void {
-    // Hide current active view
-    if (this.activeAccountId && this.activeAccountId !== accountId) {
-      const current = this.views.get(this.activeAccountId)
-      if (current) {
-        current.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+  private emitNavEvents(profileId: string, paneId: string, view: WebContentsView): void {
+    const url = view.webContents.getURL()
+    if (this.onUrlChanged) {
+      this.onUrlChanged(profileId, paneId, url)
+    }
+    if (this.onNavState) {
+      this.onNavState(profileId, paneId, view.webContents.canGoBack(), view.webContents.canGoForward())
+    }
+  }
+
+  showProfile(profileId: string): void {
+    // Hide current active profile views
+    if (this.activeProfileId && this.activeProfileId !== profileId) {
+      const currentViews = this.paneViews.get(this.activeProfileId)
+      if (currentViews) {
+        for (const view of currentViews.values()) {
+          view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+        }
       }
     }
 
-    const view = this.views.get(accountId)
-    if (!view) return
-
-    this.activeAccountId = accountId
+    this.activeProfileId = profileId
     this.updateActiveBounds()
   }
 
-  // Called by resize listener in index.ts
   updateActiveBounds(): void {
-    if (!this.activeAccountId) return
-    const view = this.views.get(this.activeAccountId)
-    if (!view) return
+    if (!this.activeProfileId) return
+    const views = this.paneViews.get(this.activeProfileId)
+    if (!views || views.size === 0) return
 
-    const [width, height] = this.win.getContentSize()
-    view.setBounds({
-      x: this.sidebarWidth,
-      y: 0,
-      width: Math.max(0, width - this.sidebarWidth - this.rightSidebarWidth),
-      height,
-    })
-  }
+    const [windowWidth, windowHeight] = this.win.getContentSize()
+    const totalWidth = windowWidth - SIDEBAR_WIDTH
+    const paneCount = views.size
+    const paneWidth = Math.floor(totalWidth / paneCount)
 
-  // Task 4.4 — destroyView
-  async destroyView(accountId: string): Promise<void> {
-    const view = this.views.get(accountId)
-    if (!view) return
-
-    // Hide first
-    view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
-    this.win.contentView.removeChildView(view)
-
-    // Clear session data
-    const partition = `persist:account-${accountId}`
-    const accountSession = session.fromPartition(partition)
-    await accountSession.clearStorageData()
-    await accountSession.clearCache()
-
-    this.views.delete(accountId)
-
-    if (this.activeAccountId === accountId) {
-      this.activeAccountId = null
+    let index = 0
+    for (const view of views.values()) {
+      const isLast = index === paneCount - 1
+      const width = isLast ? totalWidth - index * paneWidth : paneWidth
+      view.setBounds({
+        x: SIDEBAR_WIDTH + index * paneWidth,
+        y: ADDRESS_BAR_HEIGHT,
+        width: Math.max(0, width),
+        height: Math.max(0, windowHeight - ADDRESS_BAR_HEIGHT),
+      })
+      index++
     }
   }
 
-  getActiveAccountId(): string | null {
-    return this.activeAccountId
+  async addPane(profileId: string, pane: Pane): Promise<WebContentsView> {
+    let profileViews = this.paneViews.get(profileId)
+    if (!profileViews) {
+      profileViews = new Map()
+      this.paneViews.set(profileId, profileViews)
+    }
+
+    const view = this.createPaneView(profileId, pane)
+    profileViews.set(pane.id, view)
+
+    if (this.activeProfileId === profileId) {
+      this.updateActiveBounds()
+    }
+
+    return view
   }
 
-  getView(accountId: string): WebContentsView | undefined {
-    return this.views.get(accountId)
+  async removePane(profileId: string, paneId: string): Promise<void> {
+    const profileViews = this.paneViews.get(profileId)
+    if (!profileViews) return
+
+    const view = profileViews.get(paneId)
+    if (!view) return
+
+    view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+    this.win.contentView.removeChildView(view)
+    profileViews.delete(paneId)
+
+    if (this.activeProfileId === profileId) {
+      this.updateActiveBounds()
+    }
+  }
+
+  navigatePane(profileId: string, paneId: string, url: string): void {
+    const view = this.paneViews.get(profileId)?.get(paneId)
+    if (!view) return
+    view.webContents.loadURL(url)
+  }
+
+  goBack(profileId: string, paneId: string): void {
+    const view = this.paneViews.get(profileId)?.get(paneId)
+    if (view && view.webContents.canGoBack()) {
+      view.webContents.goBack()
+    }
+  }
+
+  goForward(profileId: string, paneId: string): void {
+    const view = this.paneViews.get(profileId)?.get(paneId)
+    if (view && view.webContents.canGoForward()) {
+      view.webContents.goForward()
+    }
+  }
+
+  async destroyProfile(profileId: string): Promise<void> {
+    const profileViews = this.paneViews.get(profileId)
+    if (!profileViews) return
+
+    for (const view of profileViews.values()) {
+      view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+      this.win.contentView.removeChildView(view)
+    }
+    profileViews.clear()
+    this.paneViews.delete(profileId)
+
+    // Clear session data
+    const partition = `persist:profile-${profileId}`
+    const profileSession = session.fromPartition(partition)
+    await profileSession.clearStorageData()
+    await profileSession.clearCache()
+
+    if (this.activeProfileId === profileId) {
+      this.activeProfileId = null
+    }
+  }
+
+  getActiveProfileId(): string | null {
+    return this.activeProfileId
   }
 }

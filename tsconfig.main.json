@@ -11,6 +11,6 @@
     "baseUrl": ".",
     "types": ["node", "jest"]
   },
-  "include": ["src/main/**/*", "src/preload/**/*"],
+  "include": ["src/main/**/*", "src/preload/**/*", "src/shared/**/*"],
   "exclude": ["node_modules", "src/renderer"]
 }

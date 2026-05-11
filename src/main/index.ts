@@ -1,17 +1,14 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
 import path from 'path'
-import { AccountStore } from './store'
+import { ProfileStore } from './store'
 import { ViewManager } from './view-manager'
-import { setNotificationPermission } from './permissions'
 
-// Use Node.js built-in crypto.randomUUID() — available in Node 14.17+ / Electron 30
 const { randomUUID } = require('crypto') as { randomUUID: () => string }
 
 let mainWindow: BrowserWindow | null = null
 let viewManager: ViewManager | null = null
-const accountStore = new AccountStore()
+const profileStore = new ProfileStore()
 
-const SIDEBAR_WIDTH = 72
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
 function createWindow() {
@@ -35,9 +32,16 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../../renderer/index.html'))
   }
 
-  viewManager = new ViewManager(mainWindow, SIDEBAR_WIDTH)
+  viewManager = new ViewManager(mainWindow)
 
-  // Task 2.3 — resize listener
+  // Push navigation events to renderer
+  viewManager.setUrlChangedHandler((profileId, paneId, url) => {
+    mainWindow?.webContents.send('pane:urlChanged', { profileId, paneId, url })
+  })
+  viewManager.setNavStateHandler((profileId, paneId, canGoBack, canGoForward) => {
+    mainWindow?.webContents.send('pane:navState', { profileId, paneId, canGoBack, canGoForward })
+  })
+
   mainWindow.on('resize', () => {
     viewManager?.updateActiveBounds()
   })
@@ -51,13 +55,12 @@ function createWindow() {
 app.whenReady().then(async () => {
   createWindow()
 
-  // Task 4.5 — create WebContentsViews for all persisted accounts on startup
-  const accounts = accountStore.getAll()
-  for (const account of accounts) {
-    await viewManager!.createView(account)
+  const profiles = profileStore.getAll()
+  for (const profile of profiles) {
+    await viewManager!.createProfile(profile)
   }
-  if (accounts.length > 0) {
-    viewManager!.showView(accounts[0].id)
+  if (profiles.length > 0) {
+    viewManager!.showProfile(profiles[0].id)
   }
 
   registerIpcHandlers()
@@ -71,111 +74,75 @@ app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow()
 })
 
-// Task 2.4 — IPC handlers
 function registerIpcHandlers() {
-  // Get all accounts (pull pattern — renderer requests on mount)
-  ipcMain.handle('accounts:get', () => accountStore.getAll())
+  ipcMain.handle('profiles:get', () => profileStore.getAll())
 
-  // Add account
-  ipcMain.handle('account:add', async () => {
+  ipcMain.handle('profile:add', async () => {
     if (!viewManager) return null
-    const accounts = accountStore.getAll()
-    const newAccount = {
+    const profiles = profileStore.getAll()
+    const paneId = randomUUID()
+    const newProfile = {
       id: randomUUID(),
-      name: `Account ${accounts.length + 1}`,
-      avatarUrl: '',
-      notificationsEnabled: true,
-      order: accounts.length,
+      name: `Profile ${profiles.length + 1}`,
+      order: profiles.length,
+      panes: [{ id: paneId, url: '' }],
+      activePaneId: paneId,
     }
-    accountStore.add(newAccount)
-    await viewManager.createView(newAccount)
-    viewManager.showView(newAccount.id)
-    return newAccount
+    profileStore.add(newProfile)
+    await viewManager.createProfile(newProfile)
+    viewManager.showProfile(newProfile.id)
+    return newProfile
   })
 
-  // Switch account
-  ipcMain.handle('account:switch', (_event, accountId: string) => {
+  ipcMain.handle('profile:switch', (_event, profileId: string) => {
     if (!viewManager) return { success: false }
-    viewManager.showView(accountId)
+    viewManager.showProfile(profileId)
     return { success: true }
   })
 
-  // Remove account
-  ipcMain.handle('account:remove', async (_event, accountId: string) => {
+  ipcMain.handle('profile:remove', async (_event, profileId: string) => {
     if (!viewManager || !mainWindow) return { success: false }
     const result = await dialog.showMessageBox(mainWindow, {
       type: 'warning',
       buttons: ['Cancel', 'Remove'],
       defaultId: 0,
       cancelId: 0,
-      message: 'Remove this account? This will clear its session.',
+      message: 'Remove this profile? This will clear all its data.',
     })
     if (result.response === 1) {
-      await viewManager.destroyView(accountId)
-      accountStore.remove(accountId)
-      const remaining = accountStore.getAll()
+      await viewManager.destroyProfile(profileId)
+      profileStore.remove(profileId)
+      const remaining = profileStore.getAll()
       if (remaining.length > 0) {
-        viewManager.showView(remaining[0].id)
+        viewManager.showProfile(remaining[0].id)
       }
       return { success: true, remaining }
     }
     return { success: false }
   })
 
-  // Toggle notifications
-  ipcMain.handle('account:toggleNotifications', (_event, accountId: string, enabled: boolean) => {
-    accountStore.update(accountId, { notificationsEnabled: enabled })
-    const partition = `persist:account-${accountId}`
-    setNotificationPermission(partition, enabled)
-    return { success: true }
+  ipcMain.handle('profile:rename', (_event, profileId: string, name: string) => {
+    profileStore.update(profileId, { name })
   })
 
-  // Reorder accounts
-  ipcMain.handle('account:reorder', (_event, orderedIds: unknown) => {
+  ipcMain.handle('profile:reorder', (_event, orderedIds: unknown) => {
     if (!Array.isArray(orderedIds) || !orderedIds.every((id) => typeof id === 'string')) {
       return { success: false }
     }
-    accountStore.reorder(orderedIds as string[])
+    profileStore.reorder(orderedIds as string[])
     return { success: true }
   })
 
-  // Badge update from preload
-  ipcMain.on('ipc:badge-update', (_event, data: { accountId: string; count: number }) => {
-    mainWindow?.webContents.send('badge:update', data)
-  })
-
-  // Account info from preload
-  ipcMain.on('ipc:account-info', (_event, data: { accountId: string; name: string; avatarUrl: string }) => {
-    accountStore.update(data.accountId, { name: data.name, avatarUrl: data.avatarUrl })
-    mainWindow?.webContents.send('account:infoUpdated', data)
-  })
-
-  // Notification click — focus window and switch account
-  ipcMain.on('notification:click', (_event, accountId: string) => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
-      viewManager?.showView(accountId)
-      mainWindow.webContents.send('account:switch', accountId)
-    }
-  })
-
-  // Sidebar resize — right sidebar opened/closed
-  ipcMain.on('sidebar:resize', (_event, data: { rightSidebarWidth: number }) => {
-    viewManager?.setRightSidebarWidth(data.rightSidebarWidth)
-  })
-
-  // Native context menu for account actions
-  ipcMain.handle('account:contextMenu', (_event, _accountId: string, notificationsEnabled: boolean) => {
+  ipcMain.handle('profile:contextMenu', (_event, _profileId: string) => {
     return new Promise<{ action: string | null }>((resolve) => {
       const menu = Menu.buildFromTemplate([
         {
-          label: notificationsEnabled ? 'Disable notifications' : 'Enable notifications',
-          click: () => resolve({ action: 'toggleNotifications' }),
+          label: 'Rename',
+          click: () => resolve({ action: 'rename' }),
         },
         { type: 'separator' },
         {
-          label: 'Remove account',
+          label: 'Remove',
           click: () => resolve({ action: 'remove' }),
         },
       ])
@@ -186,46 +153,38 @@ function registerIpcHandlers() {
     })
   })
 
-  // Quick Text CRUD
-  ipcMain.handle('quicktext:getAll', () => accountStore.getAllQuickTexts())
-
-  ipcMain.handle('quicktext:add', (_event, label: string, text: string) => {
-    const id = randomUUID()
-    return accountStore.addQuickText(id, label, text)
+  // Pane handlers
+  ipcMain.handle('pane:navigate', (_event, profileId: string, paneId: string, url: string) => {
+    if (!viewManager) return
+    viewManager.navigatePane(profileId, paneId, url)
+    profileStore.updatePane(profileId, paneId, { url })
   })
 
-  ipcMain.handle('quicktext:update', (_event, id: string, data: Partial<{ label: string; text: string }>) => {
-    accountStore.updateQuickText(id, data)
+  ipcMain.handle('pane:add', (_event, profileId: string) => {
+    if (!viewManager) return null
+    const pane = { id: randomUUID(), url: '' }
+    const added = profileStore.addPane(profileId, pane)
+    if (!added) return null
+    viewManager.addPane(profileId, pane)
+    return pane
   })
 
-  ipcMain.handle('quicktext:remove', (_event, id: string) => {
-    accountStore.removeQuickText(id)
+  ipcMain.handle('pane:remove', async (_event, profileId: string, paneId: string) => {
+    if (!viewManager) return { success: false }
+    await viewManager.removePane(profileId, paneId)
+    profileStore.removePane(profileId, paneId)
+    return { success: true }
   })
 
-  // Quick Text injection into active WebContentsView
-  ipcMain.handle('quicktext:inject', async (_event, text: string) => {
-    if (!viewManager) return { success: false, error: 'No view manager' }
-    const activeId = viewManager.getActiveAccountId()
-    if (!activeId) return { success: false, error: 'No active account' }
-    const view = viewManager.getView(activeId)
-    if (!view) return { success: false, error: 'No active view' }
+  ipcMain.handle('pane:setActive', (_event, profileId: string, paneId: string) => {
+    profileStore.update(profileId, { activePaneId: paneId })
+  })
 
-    try {
-      const result = await view.webContents.executeJavaScript(`
-        (function() {
-          const el = document.querySelector('[contenteditable="true"][role="textbox"]')
-            || document.querySelector('[contenteditable][role="textbox"]')
-            || document.querySelector('div[contenteditable="true"]');
-          if (!el) return { success: false, error: 'Could not find chat input' };
-          el.focus();
-          el.textContent = ${JSON.stringify(text)};
-          el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ${JSON.stringify(text)} }));
-          return { success: true };
-        })()
-      `)
-      return result
-    } catch (err: any) {
-      return { success: false, error: err.message || 'Injection failed' }
-    }
+  ipcMain.handle('pane:goBack', (_event, profileId: string, paneId: string) => {
+    viewManager?.goBack(profileId, paneId)
+  })
+
+  ipcMain.handle('pane:goForward', (_event, profileId: string, paneId: string) => {
+    viewManager?.goForward(profileId, paneId)
   })
 }

@@ -1,41 +1,38 @@
-export interface Account {
+export interface Pane {
   id: string
-  name: string
-  avatarUrl: string
-  notificationsEnabled: boolean
-  order: number
+  url: string
 }
 
-export interface QuickText {
+export interface Profile {
   id: string
-  label: string
-  text: string
+  name: string
   order: number
+  panes: Pane[]
+  activePaneId: string
 }
 
 export interface ElectronAPI {
-  // Account management
-  getAccounts: () => Promise<Account[]>
-  addAccount: () => Promise<Account>
-  switchAccount: (accountId: string) => Promise<{ success: boolean }>
-  removeAccount: (accountId: string) => Promise<{ success: boolean; remaining?: Account[] }>
-  toggleNotifications: (accountId: string, enabled: boolean) => Promise<{ success: boolean }>
-  reorderAccounts: (orderedIds: string[]) => Promise<{ success: boolean }>
-  // Sidebar
-  resizeSidebar: (data: { rightSidebarWidth: number }) => void
-  // Context menu
-  showAccountContextMenu: (accountId: string, notificationsEnabled: boolean) => Promise<{ action: 'remove' | 'toggleNotifications' | null }>
-  // Quick Text
-  quickTextGetAll: () => Promise<QuickText[]>
-  quickTextAdd: (label: string, text: string) => Promise<QuickText>
-  quickTextUpdate: (id: string, data: Partial<{ label: string; text: string }>) => Promise<void>
-  quickTextRemove: (id: string) => Promise<void>
-  quickTextInject: (text: string) => Promise<{ success: boolean; error?: string }>
-  // Event listeners
-  onBadgeUpdate: (callback: (data: { accountId: string; count: number }) => void) => void
-  onAccountInfoUpdated: (callback: (data: { accountId: string; name: string; avatarUrl: string }) => void) => void
-  onAccountSwitch: (callback: (accountId: string) => void) => void
-  removeAllListeners: (channel: string) => void
+  // Profiles
+  getProfiles(): Promise<Profile[]>
+  addProfile(): Promise<Profile>
+  switchProfile(profileId: string): Promise<{ success: boolean }>
+  removeProfile(profileId: string): Promise<{ success: boolean; remaining?: Profile[] }>
+  renameProfile(profileId: string, name: string): Promise<void>
+  reorderProfiles(orderedIds: string[]): Promise<{ success: boolean }>
+  showProfileContextMenu(profileId: string): Promise<{ action: string | null }>
+
+  // Panes
+  navigatePane(profileId: string, paneId: string, url: string): Promise<void>
+  addPane(profileId: string): Promise<Pane | null>
+  removePane(profileId: string, paneId: string): Promise<{ success: boolean }>
+  setActivePane(profileId: string, paneId: string): Promise<void>
+  goBack(profileId: string, paneId: string): Promise<void>
+  goForward(profileId: string, paneId: string): Promise<void>
+
+  // Events
+  onPaneUrlChanged(callback: (data: { profileId: string; paneId: string; url: string }) => void): () => void
+  onPaneNavState(callback: (data: { profileId: string; paneId: string; canGoBack: boolean; canGoForward: boolean }) => void): () => void
+  onProfileSwitch(callback: (profileId: string) => void): () => void
 }
 
 declare global {
