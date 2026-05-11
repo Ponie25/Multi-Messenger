@@ -1,0 +1,9 @@
+node_modules/
+dist/
+release/
+*.dmg
+*.exe
+*.AppImage
+*.snap
+.env
+.DS_Store
