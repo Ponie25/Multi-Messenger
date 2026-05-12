@@ -20,6 +20,7 @@ export default function App() {
   const [tabNavState, setTabNavState] = useState<Record<string, { canGoBack: boolean; canGoForward: boolean }>>({})
   const [tabLoading, setTabLoading] = useState<Record<string, boolean>>({})
   const [viewState, setViewState] = useState<ViewState>('workspace')
+  const [adblockEnabled, setAdblockEnabled] = useState(true)
 
   const { notifications, unreadCount, addNotification, markRead, markAllRead } = useNotifications()
 
@@ -31,6 +32,10 @@ export default function App() {
       if (loaded.length > 0) {
         setActiveProfileId(loaded[0].id)
       }
+    })
+
+    api.getSettings().then((s) => {
+      setAdblockEnabled(s.adblockEnabled)
     })
 
     const unsubUrl = api.onPaneUrlChanged(({ tabId, url }) => {
@@ -245,6 +250,11 @@ export default function App() {
     }
   }, [viewState])
 
+  const handleAdblockToggle = useCallback(async (enabled: boolean) => {
+    setAdblockEnabled(enabled)
+    await window.electronAPI.setAdblockEnabled(enabled)
+  }, [])
+
   const handleNotificationClick = useCallback((notification: NotificationItem) => {
     markRead(notification.id)
     // Check if the source pane still exists
@@ -308,6 +318,8 @@ export default function App() {
           onRemoveProfile={() => {
             if (activeProfileId) handleRemoveProfile(activeProfileId)
           }}
+          adblockEnabled={adblockEnabled}
+          onAdblockToggle={handleAdblockToggle}
         />
         <div className="flex flex-1 min-h-0">
           <Sidebar

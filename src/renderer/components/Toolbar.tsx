@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'react'
-import { Pencil, Trash2, Check, X } from 'lucide-react'
+import { useState, useEffect, useRef, useMemo } from 'react'
+import { Pencil, Trash2, Check, X, MoreHorizontal } from 'lucide-react'
 import { WindowControls } from './WindowControls'
 import { DynamicIsland, type ConfirmRequest } from './DynamicIsland'
 import { Input } from './ui/input'
@@ -11,13 +11,28 @@ interface ToolbarProps {
   onNotificationClick: (notification: NotificationItem) => void
   onRenameProfile: (name: string) => void
   onRemoveProfile: () => void
+  adblockEnabled: boolean
+  onAdblockToggle: (enabled: boolean) => void
 }
 
-export function Toolbar({ profileName, notifications, onNotificationClick, onRenameProfile, onRemoveProfile }: ToolbarProps) {
+export function Toolbar({ profileName, notifications, onNotificationClick, onRenameProfile, onRemoveProfile, adblockEnabled, onAdblockToggle }: ToolbarProps) {
   const isWindows = navigator.userAgent.includes('Windows')
   const [isRenaming, setIsRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(profileName)
   const [pendingDelete, setPendingDelete] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const settingsRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!settingsOpen) return
+    const handler = (e: MouseEvent) => {
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
+        setSettingsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [settingsOpen])
 
   const handleStartRename = () => {
     setRenameValue(profileName)
@@ -58,6 +73,31 @@ export function Toolbar({ profileName, notifications, onNotificationClick, onRen
       onDoubleClick={() => window.electronAPI.windowMaximize()}
     >
       <div className="flex-shrink-0 flex items-center gap-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+        <div className="relative" ref={settingsRef}>
+          <button
+            onClick={() => setSettingsOpen((v) => !v)}
+            className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground"
+            aria-label="Settings"
+            title="Settings"
+          >
+            <MoreHorizontal className="h-3.5 w-3.5" />
+          </button>
+
+          {settingsOpen && (
+            <div className="absolute left-0 top-full mt-1 z-50 min-w-[180px] rounded-lg border border-border bg-popover shadow-md p-1">
+              <div
+                className="flex items-center justify-between px-3 h-8 rounded-md hover:bg-accent cursor-pointer select-none"
+                onClick={() => onAdblockToggle(!adblockEnabled)}
+              >
+                <span className="text-xs text-foreground">Ad Blocking</span>
+                <div className={`relative w-7 h-4 rounded-full transition-colors ${adblockEnabled ? 'bg-primary' : 'bg-muted-foreground/30'}`}>
+                  <div className={`absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${adblockEnabled ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
         {isRenaming ? (
           <div className="flex items-center gap-1">
             <Input

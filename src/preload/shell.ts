@@ -38,6 +38,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   windowClose: () => ipcRenderer.send('window:close'),
   windowIsMaximized: () => ipcRenderer.invoke('window:isMaximized'),
 
+  // Quick Text
+  getAllQuickTexts: () => ipcRenderer.invoke('quicktext:getAll'),
+  addQuickText: (label: string, text: string) => ipcRenderer.invoke('quicktext:add', label, text),
+  updateQuickText: (id: string, data: Partial<{ label: string; text: string }>) => ipcRenderer.invoke('quicktext:update', id, data),
+  removeQuickText: (id: string) => ipcRenderer.invoke('quicktext:remove', id),
+  injectQuickText: (text: string) => ipcRenderer.invoke('quicktext:inject', text),
+
+  // Settings
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  setAdblockEnabled: (enabled: boolean) => ipcRenderer.invoke('settings:setAdblock', enabled),
+
   // View management
   hideAllViews: () => ipcRenderer.send('view:hideAll'),
   showProfileViews: (profileId: string) => ipcRenderer.send('view:showProfile', profileId),

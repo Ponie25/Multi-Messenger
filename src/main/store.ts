@@ -5,9 +5,14 @@ import { splitLeaf, removeLeaf, swapLeaves, countLeaves, getAllLeafPaneIds } fro
 
 export type { Profile, Pane, Tab, QuickText }
 
+export interface Settings {
+  adblockEnabled: boolean
+}
+
 interface StoreSchema {
   profiles: Profile[]
   quickTexts: QuickText[]
+  settings: Settings
 }
 
 // Legacy types for migration
@@ -24,7 +29,7 @@ export class ProfileStore {
 
   constructor() {
     this.store = new Store<StoreSchema>({
-      defaults: { profiles: [], quickTexts: [] },
+      defaults: { profiles: [], quickTexts: [], settings: { adblockEnabled: true } },
     })
     this.migrate()
   }
@@ -333,5 +338,15 @@ export class ProfileStore {
   removeQuickText(id: string): void {
     const quickTexts = this.store.get('quickTexts').filter((q) => q.id !== id)
     this.store.set('quickTexts', quickTexts)
+  }
+
+  // Settings methods
+  getSettings(): Settings {
+    return this.store.get('settings')
+  }
+
+  updateSettings(changes: Partial<Settings>): void {
+    const current = this.store.get('settings')
+    this.store.set('settings', { ...current, ...changes })
   }
 }

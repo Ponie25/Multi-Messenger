@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, Menu, session as electronSession } from 'e
 import path from 'path'
 import { ProfileStore } from './store'
 import { ViewManager } from './view-manager'
-import { initAdBlocker, enableBlockingForAllProfiles, enableBlockingForSession } from './adblocker'
+import { initAdBlocker, enableBlockingForAllProfiles, enableBlockingForSession, disableBlockingForAllProfiles, isAdBlockerReady } from './adblocker'
 import type { SplitNode } from '../shared/types'
 
 const { randomUUID } = require('crypto') as { randomUUID: () => string }
@@ -75,10 +75,13 @@ app.whenReady().then(async () => {
     viewManager!.showProfile(profiles[0].id, profiles[0].splitTree)
   }
 
-  // Initialize ad blocker in background (non-blocking)
-  initAdBlocker().then(() => {
-    enableBlockingForAllProfiles(profiles.map((p) => p.id))
-  }).catch(() => {})
+  // Initialize ad blocker only if enabled in settings
+  const settings = profileStore.getSettings()
+  if (settings.adblockEnabled) {
+    initAdBlocker().then(() => {
+      enableBlockingForAllProfiles(profiles.map((p) => p.id))
+    }).catch(() => {})
+  }
 })
 
 app.on('window-all-closed', () => {
@@ -107,10 +110,13 @@ function registerIpcHandlers() {
     }
     profileStore.add(newProfile)
 
-    // Enable ad blocking on the new profile's session
-    const partition = `persist:profile-${newProfile.id}`
-    const profileSession = electronSession.fromPartition(partition)
-    try { enableBlockingForSession(profileSession, partition) } catch {}
+    // Enable ad blocking on the new profile's session if adblock is enabled
+    const settings = profileStore.getSettings()
+    if (settings.adblockEnabled) {
+      const partition = `persist:profile-${newProfile.id}`
+      const profileSession = electronSession.fromPartition(partition)
+      try { enableBlockingForSession(profileSession, partition) } catch {}
+    }
 
     await viewManager.createProfile(newProfile)
     viewManager.showProfile(newProfile.id)
@@ -355,5 +361,24 @@ function registerIpcHandlers() {
     } catch (err: any) {
       return { success: false, error: err.message || 'Injection failed' }
     }
+  })
+
+  // Settings handlers
+  ipcMain.handle('settings:get', () => profileStore.getSettings())
+
+  ipcMain.handle('settings:setAdblock', async (_event, enabled: boolean) => {
+    profileStore.updateSettings({ adblockEnabled: enabled })
+    const profiles = profileStore.getAll()
+    const profileIds = profiles.map((p) => p.id)
+
+    if (enabled) {
+      if (!isAdBlockerReady()) {
+        await initAdBlocker()
+      }
+      enableBlockingForAllProfiles(profileIds)
+    } else {
+      disableBlockingForAllProfiles(profileIds)
+    }
+    return { success: true }
   })
 }

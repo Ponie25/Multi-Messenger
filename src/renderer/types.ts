@@ -46,6 +46,10 @@ export interface ElectronAPI {
   onPaneNavState(callback: (data: { profileId: string; paneId: string; tabId: string; canGoBack: boolean; canGoForward: boolean }) => void): () => void
   onPaneLoading(callback: (data: { profileId: string; paneId: string; tabId: string; loading: boolean }) => void): () => void
   onProfileSwitch(callback: (profileId: string) => void): () => void
+
+  // Settings
+  getSettings(): Promise<{ adblockEnabled: boolean }>
+  setAdblockEnabled(enabled: boolean): Promise<{ success: boolean }>
 }
 
 declare global {

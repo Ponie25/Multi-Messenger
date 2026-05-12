@@ -206,6 +206,72 @@ export class ViewManager {
       view.webContents.executeJavaScript(notificationScript).catch(() => {})
     })
 
+    // Inject element collapsing script — hides containers of blocked resources
+    const collapseScript = `
+      (function() {
+        if (window.__collapseInjected) return;
+        window.__collapseInjected = true;
+
+        var COLLAPSE_STYLE = 'display:none!important;';
+
+        function shouldCollapse(el) {
+          if (!el || el === document.body || el === document.documentElement) return false;
+          var tag = el.tagName;
+          return tag === 'IMG' || tag === 'IFRAME' || tag === 'VIDEO' ||
+                 tag === 'EMBED' || tag === 'OBJECT' || tag === 'SOURCE';
+        }
+
+        function collapseElement(el) {
+          el.style.cssText = COLLAPSE_STYLE;
+          // Collapse parent if it looks like an ad wrapper (small or single-child container)
+          var parent = el.parentElement;
+          if (!parent || parent === document.body) return;
+          var rect = parent.getBoundingClientRect();
+          var children = parent.children;
+          var visibleChildren = 0;
+          for (var i = 0; i < children.length; i++) {
+            if (children[i].style.display !== 'none' && children[i].offsetHeight > 0) {
+              visibleChildren++;
+            }
+          }
+          if (visibleChildren === 0) {
+            parent.style.cssText = COLLAPSE_STYLE;
+          }
+        }
+
+        // Listen for error events on resource elements (blocked requests trigger error)
+        document.addEventListener('error', function(e) {
+          var el = e.target;
+          if (shouldCollapse(el)) {
+            collapseElement(el);
+          }
+        }, true);
+
+        // Observe new elements and collapse empty iframes/imgs that fail to load
+        var observer = new MutationObserver(function(mutations) {
+          for (var i = 0; i < mutations.length; i++) {
+            var nodes = mutations[i].addedNodes;
+            for (var j = 0; j < nodes.length; j++) {
+              var node = nodes[j];
+              if (node.nodeType !== 1) continue;
+              // Check iframes with ad-like src patterns
+              if (node.tagName === 'IFRAME') {
+                var src = node.src || '';
+                if (src === 'about:blank' || !src) continue;
+                node.addEventListener('error', function() { collapseElement(this); });
+              }
+            }
+          }
+        });
+        observer.observe(document.documentElement, { childList: true, subtree: true });
+      })();
+    `
+
+    view.webContents.on('did-finish-load', () => {
+      if (view.webContents.isDestroyed()) return
+      view.webContents.executeJavaScript(collapseScript).catch(() => {})
+    })
+
     // Inject minimal scrollbar CSS
     view.webContents.on('did-finish-load', () => {
       if (view.webContents.isDestroyed()) return
