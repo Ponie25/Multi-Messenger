@@ -26,6 +26,17 @@ export interface NotificationItem {
   read: boolean
 }
 
+export interface MediaState {
+  profileId: string
+  paneId: string
+  tabId: string
+  title: string
+  artist?: string
+  source: string
+  url: string
+  isPlaying: boolean
+}
+
 export interface Profile {
   id: string
   name: string

@@ -1,27 +1,102 @@
 import { ElectronBlocker, adsAndTrackingLists } from '@ghostery/adblocker-electron'
 import fetch from 'cross-fetch'
 import { session } from 'electron'
+import {
+  ADBLOCK_FILTERS,
+  BUILTIN_ADS_TRACKING_FILTER_ID,
+  DEFAULT_ADBLOCK_FILTER_IDS,
+  normalizeAdblockFilterIds,
+} from '../shared/adblock-filters'
 
 let blocker: ElectronBlocker | null = null
 const enabledSessions = new Set<string>()
+let activeFilterIds: string[] | null = null
+const FILTER_FETCH_TIMEOUT_MS = 12000
 
-const UBLOCK_EXTRA_LISTS = [
-  'https://raw.githubusercontent.com/uBlockOrigin/uAssets/main/filters/filters.txt',
-  'https://raw.githubusercontent.com/uBlockOrigin/uAssets/main/filters/quick-fixes.txt',
-  // Vietnamese ad filter list (covers Vietnamese sites like animevietsub, phimmoi, etc.)
-  'https://raw.githubusercontent.com/abpvn/abpvn/master/filter/abpvn_ublock.txt',
-]
+interface BuiltAdBlocker {
+  blocker: ElectronBlocker | null
+  filterIds: string[]
+}
 
-export async function initAdBlocker(): Promise<void> {
-  if (blocker) return
+function areFilterIdsEqual(a: string[] | null, b: string[]): boolean {
+  return Boolean(a) && a!.length === b.length && a!.every((id, index) => id === b[index])
+}
+
+function getFilterListUrls(filterIds: string[]): string[] {
+  const urls: string[] = []
+  if (filterIds.includes(BUILTIN_ADS_TRACKING_FILTER_ID)) {
+    urls.push(...adsAndTrackingLists)
+  }
+
+  for (const filterId of filterIds) {
+    const filter = ADBLOCK_FILTERS.find((item) => item.id === filterId)
+    if (filter) urls.push(...filter.urls)
+  }
+
+  return Array.from(new Set(urls))
+}
+
+async function fetchFilterList(url: string): Promise<string | null> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), FILTER_FETCH_TIMEOUT_MS)
+
   try {
-    blocker = await ElectronBlocker.fromLists(fetch, [
-      ...adsAndTrackingLists,
-      ...UBLOCK_EXTRA_LISTS,
-    ])
+    const response = await fetch(url, { signal: controller.signal } as any)
+    if (!response.ok) {
+      console.warn(`[adblocker] Skipping ${url}: HTTP ${response.status}`)
+      return null
+    }
+    return await response.text()
+  } catch (err: any) {
+    console.warn(`[adblocker] Skipping ${url}: ${err?.code || err?.type || err?.message || 'fetch failed'}`)
+    return null
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+export async function buildAdBlocker(filterIds: string[] = DEFAULT_ADBLOCK_FILTER_IDS): Promise<BuiltAdBlocker | null> {
+  const normalizedFilterIds = normalizeAdblockFilterIds(filterIds)
+
+  try {
+    const filterUrls = getFilterListUrls(normalizedFilterIds)
+    if (filterUrls.length === 0) {
+      return { blocker: null, filterIds: normalizedFilterIds }
+    }
+
+    const lists = (await Promise.all(filterUrls.map(fetchFilterList))).filter((list): list is string =>
+      Boolean(list && list.trim())
+    )
+
+    if (lists.length === 0) {
+      console.error('[adblocker] No filter lists could be loaded')
+      return null
+    }
+
+    const nextBlocker = ElectronBlocker.parse(lists.join('\n'))
+    return { blocker: nextBlocker, filterIds: normalizedFilterIds }
   } catch (err) {
     console.error('[adblocker] Failed to initialize:', err)
+    return null
   }
+}
+
+export function replaceAdBlocker(next: BuiltAdBlocker): void {
+  blocker = next.blocker
+  activeFilterIds = next.filterIds
+}
+
+export async function initAdBlocker(filterIds: string[] = DEFAULT_ADBLOCK_FILTER_IDS): Promise<void> {
+  const normalizedFilterIds = normalizeAdblockFilterIds(filterIds)
+  if (blocker && areFilterIdsEqual(activeFilterIds, normalizedFilterIds)) return
+
+  const next = await buildAdBlocker(normalizedFilterIds)
+  if (next) replaceAdBlocker(next)
+}
+
+export async function rebuildAdBlocker(filterIds: string[]): Promise<void> {
+  const next = await buildAdBlocker(filterIds)
+  if (next) replaceAdBlocker(next)
 }
 
 export function isAdBlockerReady(): boolean {
@@ -52,14 +127,14 @@ export function enableBlockingForSession(partitionSession: Electron.Session, par
 }
 
 export function disableBlockingForSession(partitionSession: Electron.Session, partitionKey: string): void {
-  if (!blocker || !enabledSessions.has(partitionKey)) return
+  if (!enabledSessions.has(partitionKey)) return
   try {
-    blocker.disableBlockingInSession(partitionSession)
+    blocker?.disableBlockingInSession(partitionSession)
   } catch {
     // Session wasn't fully registered in library — clean up webRequest manually
-    partitionSession.webRequest.onHeadersReceived(null)
-    partitionSession.webRequest.onBeforeRequest(null)
   }
+  partitionSession.webRequest.onHeadersReceived(null)
+  partitionSession.webRequest.onBeforeRequest(null)
   enabledSessions.delete(partitionKey)
 }
 
@@ -75,17 +150,16 @@ export function enableBlockingForAllProfiles(profileIds: string[]): void {
 }
 
 export function disableBlockingForAllProfiles(profileIds: string[]): void {
-  if (!blocker) return
   for (const id of profileIds) {
     const key = `persist:profile-${id}`
     if (!enabledSessions.has(key)) continue
     const s = session.fromPartition(key)
     try {
-      blocker.disableBlockingInSession(s)
+      blocker?.disableBlockingInSession(s)
     } catch {
-      s.webRequest.onHeadersReceived(null)
-      s.webRequest.onBeforeRequest(null)
     }
+    s.webRequest.onHeadersReceived(null)
+    s.webRequest.onBeforeRequest(null)
     enabledSessions.delete(key)
   }
 }

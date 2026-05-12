@@ -4,13 +4,20 @@ import { Sidebar } from './components/Sidebar'
 import { Toolbar } from './components/Toolbar'
 import { ContentArea } from './components/ContentArea'
 import { NotificationPage } from './components/NotificationPage'
+import { SettingsPage } from './components/SettingsPage'
 import { PaneDndProvider } from './components/PaneDndContext'
 import { useNotifications } from './hooks/useNotifications'
 import { updateRatioByPath } from '../shared/split-tree'
-import type { Profile, SplitNode, SplitDirection, NotificationItem } from './types'
+import { DEFAULT_ADBLOCK_FILTER_IDS, normalizeAdblockFilterIds } from '../shared/adblock-filters'
+import type { MediaState, Profile, SplitNode, SplitDirection, NotificationItem } from './types'
 import './index.css'
 
-type ViewState = 'workspace' | 'notifications'
+type ViewState = 'workspace' | 'notifications' | 'settings'
+
+interface AppSettings {
+  adblockEnabled: boolean
+  adblockFilterIds: string[]
+}
 
 export default function App() {
   const [profiles, setProfiles] = useState<Profile[]>([])
@@ -20,7 +27,11 @@ export default function App() {
   const [tabNavState, setTabNavState] = useState<Record<string, { canGoBack: boolean; canGoForward: boolean }>>({})
   const [tabLoading, setTabLoading] = useState<Record<string, boolean>>({})
   const [viewState, setViewState] = useState<ViewState>('workspace')
-  const [adblockEnabled, setAdblockEnabled] = useState(true)
+  const [settings, setSettings] = useState<AppSettings>({
+    adblockEnabled: true,
+    adblockFilterIds: DEFAULT_ADBLOCK_FILTER_IDS,
+  })
+  const [mediaState, setMediaState] = useState<MediaState | null>(null)
 
   const { notifications, unreadCount, addNotification, markRead, markAllRead } = useNotifications()
 
@@ -34,9 +45,8 @@ export default function App() {
       }
     })
 
-    api.getSettings().then((s) => {
-      setAdblockEnabled(s.adblockEnabled)
-    })
+    api.getSettings().then((s) => setSettings(s))
+    api.getMediaState().then(setMediaState)
 
     const unsubUrl = api.onPaneUrlChanged(({ tabId, url }) => {
       setTabUrls((prev) => ({ ...prev, [tabId]: url }))
@@ -66,6 +76,7 @@ export default function App() {
         read: false,
       })
     })
+    const unsubMedia = api.onMediaState(setMediaState)
 
     return () => {
       unsubUrl()
@@ -73,6 +84,7 @@ export default function App() {
       unsubLoading()
       unsubSwitch()
       unsubNotification()
+      unsubMedia()
     }
   }, [addNotification])
 
@@ -81,14 +93,14 @@ export default function App() {
     if (newProfile) {
       setProfiles((prev) => [...prev, newProfile])
       setActiveProfileId(newProfile.id)
-      if (viewState === 'notifications') setViewState('workspace')
+      if (viewState !== 'workspace') setViewState('workspace')
     }
   }, [viewState])
 
   const handleSwitchProfile = useCallback(async (profileId: string) => {
     await window.electronAPI.switchProfile(profileId)
     setActiveProfileId(profileId)
-    if (viewState === 'notifications') setViewState('workspace')
+    if (viewState !== 'workspace') setViewState('workspace')
   }, [viewState])
 
   const handleRemoveProfile = useCallback(async (profileId: string) => {
@@ -215,6 +227,7 @@ export default function App() {
   }, [activeProfileId])
 
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const settingsRequestIdRef = useRef(0)
 
   const handleResize = useCallback((path: number[], ratio: number) => {
     if (!activeProfileId) return
@@ -251,9 +264,67 @@ export default function App() {
   }, [viewState])
 
   const handleAdblockToggle = useCallback(async (enabled: boolean) => {
-    setAdblockEnabled(enabled)
-    await window.electronAPI.setAdblockEnabled(enabled)
+    const requestId = ++settingsRequestIdRef.current
+    setSettings((prev) => ({ ...prev, adblockEnabled: enabled }))
+    const result = await window.electronAPI.setAdblockEnabled(enabled)
+    if (requestId === settingsRequestIdRef.current && result.settings) {
+      setSettings(result.settings)
+    }
   }, [])
+
+  const handleAdblockFiltersChange = useCallback(async (filterIds: string[]) => {
+    const requestId = ++settingsRequestIdRef.current
+    const normalizedFilterIds = normalizeAdblockFilterIds(filterIds)
+    setSettings((prev) => ({ ...prev, adblockFilterIds: normalizedFilterIds }))
+    const result = await window.electronAPI.setAdblockFilterIds(normalizedFilterIds)
+    if (requestId === settingsRequestIdRef.current && result.settings) {
+      setSettings(result.settings)
+    }
+  }, [])
+
+  const handleAdblockSettingsSave = useCallback(async (enabled: boolean, filterIds: string[]) => {
+    const requestId = ++settingsRequestIdRef.current
+    const normalizedFilterIds = normalizeAdblockFilterIds(filterIds)
+    setSettings({ adblockEnabled: enabled, adblockFilterIds: normalizedFilterIds })
+    let result: { success: boolean; settings?: AppSettings }
+    try {
+      result = await window.electronAPI.setAdblockSettings(enabled, normalizedFilterIds)
+    } catch (err: any) {
+      if (!String(err?.message || err).includes('No handler registered')) {
+        throw err
+      }
+      await window.electronAPI.setAdblockEnabled(enabled)
+      result = await window.electronAPI.setAdblockFilterIds(normalizedFilterIds)
+    }
+    if (requestId === settingsRequestIdRef.current && result.settings) {
+      setSettings(result.settings)
+    }
+  }, [])
+
+  const handleSettingsClick = useCallback(() => {
+    setViewState((current) => (current === 'settings' ? 'workspace' : 'settings'))
+  }, [])
+
+  const handleMediaFocus = useCallback(async () => {
+    if (!mediaState) return
+    await window.electronAPI.switchProfile(mediaState.profileId)
+    await window.electronAPI.setActivePane(mediaState.profileId, mediaState.paneId)
+    await window.electronAPI.setActiveTab(mediaState.profileId, mediaState.paneId, mediaState.tabId)
+    setActiveProfileId(mediaState.profileId)
+    setProfiles((prev) =>
+      prev.map((profile) => {
+        if (profile.id !== mediaState.profileId) return profile
+        return {
+          ...profile,
+          activePaneId: mediaState.paneId,
+          panes: profile.panes.map((pane) =>
+            pane.id === mediaState.paneId ? { ...pane, activeTabId: mediaState.tabId } : pane
+          ),
+        }
+      })
+    )
+    setViewState('workspace')
+  }, [mediaState])
 
   const handleNotificationClick = useCallback((notification: NotificationItem) => {
     markRead(notification.id)
@@ -298,7 +369,7 @@ export default function App() {
 
   // Hide/show WebContentsViews based on view state
   useEffect(() => {
-    if (viewState === 'notifications') {
+    if (viewState !== 'workspace') {
       window.electronAPI.hideAllViews()
     } else if (activeProfileId) {
       window.electronAPI.showProfileViews(activeProfileId)
@@ -318,21 +389,33 @@ export default function App() {
           onRemoveProfile={() => {
             if (activeProfileId) handleRemoveProfile(activeProfileId)
           }}
-          adblockEnabled={adblockEnabled}
+          adblockEnabled={settings.adblockEnabled}
           onAdblockToggle={handleAdblockToggle}
+          onSettingsClick={handleSettingsClick}
+          mediaState={mediaState}
+          onMediaFocus={handleMediaFocus}
         />
         <div className="flex flex-1 min-h-0">
           <Sidebar
             profiles={profiles}
             activeProfileId={activeProfileId}
             unreadCount={unreadCount}
+            settingsActive={viewState === 'settings'}
             onAddProfile={handleAddProfile}
             onSwitchProfile={handleSwitchProfile}
             onReorder={handleReorder}
             onBellClick={handleBellClick}
+            onSettingsClick={handleSettingsClick}
           />
           <div className="flex-1 relative min-w-0 bg-muted/30">
-            {viewState === 'notifications' ? (
+            {viewState === 'settings' ? (
+              <SettingsPage
+                adblockEnabled={settings.adblockEnabled}
+                adblockFilterIds={settings.adblockFilterIds}
+                onBack={() => setViewState('workspace')}
+                onSave={handleAdblockSettingsSave}
+              />
+            ) : viewState === 'notifications' ? (
               <NotificationPage
                 notifications={notifications}
                 onNotificationClick={handleNotificationClick}

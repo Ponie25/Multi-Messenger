@@ -48,6 +48,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Settings
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setAdblockEnabled: (enabled: boolean) => ipcRenderer.invoke('settings:setAdblock', enabled),
+  setAdblockFilterIds: (filterIds: string[]) => ipcRenderer.invoke('settings:setAdblockFilters', filterIds),
+  setAdblockSettings: (enabled: boolean, filterIds: string[]) =>
+    ipcRenderer.invoke('settings:setAdblockSettings', enabled, filterIds),
 
   // View management
   hideAllViews: () => ipcRenderer.send('view:hideAll'),
@@ -58,6 +61,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_event: any, data: any) => callback(data)
     ipcRenderer.on('notification:received', handler)
     return () => ipcRenderer.removeListener('notification:received', handler)
+  },
+
+  // Media
+  getMediaState: () => ipcRenderer.invoke('media:getState'),
+  onMediaState: (callback: (state: any) => void) => {
+    const handler = (_event: any, state: any) => callback(state)
+    ipcRenderer.on('media:state', handler)
+    return () => ipcRenderer.removeListener('media:state', handler)
   },
 
   // Events

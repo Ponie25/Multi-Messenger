@@ -1,12 +1,14 @@
 import Store from 'electron-store'
 import { MAX_PANES_PER_PROFILE } from '../shared/constants'
 import { Profile, Pane, Tab, SplitNode, SplitDirection, QuickText } from '../shared/types'
+import { DEFAULT_ADBLOCK_FILTER_IDS, normalizeAdblockFilterIds } from '../shared/adblock-filters'
 import { splitLeaf, removeLeaf, swapLeaves, countLeaves, getAllLeafPaneIds } from '../shared/split-tree'
 
 export type { Profile, Pane, Tab, QuickText }
 
 export interface Settings {
   adblockEnabled: boolean
+  adblockFilterIds: string[]
 }
 
 interface StoreSchema {
@@ -29,7 +31,11 @@ export class ProfileStore {
 
   constructor() {
     this.store = new Store<StoreSchema>({
-      defaults: { profiles: [], quickTexts: [], settings: { adblockEnabled: true } },
+      defaults: {
+        profiles: [],
+        quickTexts: [],
+        settings: { adblockEnabled: true, adblockFilterIds: DEFAULT_ADBLOCK_FILTER_IDS },
+      },
     })
     this.migrate()
   }
@@ -342,7 +348,18 @@ export class ProfileStore {
 
   // Settings methods
   getSettings(): Settings {
-    return this.store.get('settings')
+    const current = this.store.get('settings') as Partial<Settings>
+    const normalized = {
+      adblockEnabled: current.adblockEnabled ?? true,
+      adblockFilterIds: normalizeAdblockFilterIds(current.adblockFilterIds),
+    }
+    if (
+      current.adblockEnabled !== normalized.adblockEnabled ||
+      JSON.stringify(current.adblockFilterIds) !== JSON.stringify(normalized.adblockFilterIds)
+    ) {
+      this.store.set('settings', normalized)
+    }
+    return normalized
   }
 
   updateSettings(changes: Partial<Settings>): void {

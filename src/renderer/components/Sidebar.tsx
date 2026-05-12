@@ -16,7 +16,7 @@ import {
   arrayMove,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { Sun, Moon, Plus, Bell } from 'lucide-react'
+import { Sun, Moon, Plus, Bell, Settings } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
 import { Button } from './ui/button'
 import { useTheme } from './ThemeProvider'
@@ -26,10 +26,12 @@ interface SidebarProps {
   profiles: Profile[]
   activeProfileId: string | null
   unreadCount: number
+  settingsActive: boolean
   onAddProfile: () => void
   onSwitchProfile: (profileId: string) => void
   onReorder: (orderedIds: string[]) => void
   onBellClick: () => void
+  onSettingsClick: () => void
 }
 
 function SortableProfileItem({
@@ -66,10 +68,12 @@ export function Sidebar({
   profiles,
   activeProfileId,
   unreadCount,
+  settingsActive,
   onAddProfile,
   onSwitchProfile,
   onReorder,
   onBellClick,
+  onSettingsClick,
 }: SidebarProps) {
   const { resolvedTheme, setTheme } = useTheme()
 
@@ -99,56 +103,71 @@ export function Sidebar({
       style={{ width: 72, minWidth: 72, maxWidth: 72 }}
       aria-label="Profile switcher"
     >
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-        <SortableContext items={profiles.map((p) => p.id)} strategy={verticalListSortingStrategy}>
-          <div className="flex flex-col gap-3 flex-1 w-full items-center overflow-y-auto scrollbar-hide">
-            {profiles.map((profile) => (
-              <SortableProfileItem
-                key={profile.id}
-                profile={profile}
-                isActive={profile.id === activeProfileId}
-                onSwitch={() => onSwitchProfile(profile.id)}
-              />
-            ))}
-          </div>
-        </SortableContext>
-      </DndContext>
+      <div className="flex min-h-0 flex-1 flex-col items-center gap-3 overflow-y-auto scrollbar-hide">
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <SortableContext items={profiles.map((p) => p.id)} strategy={verticalListSortingStrategy}>
+            <div className="flex w-full flex-col items-center gap-3">
+              {profiles.map((profile) => (
+                <SortableProfileItem
+                  key={profile.id}
+                  profile={profile}
+                  isActive={profile.id === activeProfileId}
+                  onSwitch={() => onSwitchProfile(profile.id)}
+                />
+              ))}
+            </div>
+          </SortableContext>
+        </DndContext>
 
-      <Button
-        variant="ghost"
-        size="icon"
-        onClick={onBellClick}
-        className="w-10 h-10 rounded-full text-muted-foreground hover:text-foreground relative"
-        aria-label="Notifications"
-      >
-        <Bell className="h-5 w-5" />
-        {unreadCount > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold px-1">
-            {unreadCount > 99 ? '99+' : unreadCount}
-          </span>
-        )}
-      </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={onAddProfile}
+          className="w-10 h-10 rounded-full text-muted-foreground hover:text-foreground hover:bg-accent"
+          aria-label="Add profile"
+          title="Add profile"
+        >
+          <Plus className="h-5 w-5" />
+        </Button>
+      </div>
 
-      <Button
-        variant="ghost"
-        size="icon"
-        onClick={() => setTheme(isDark ? 'light' : 'dark')}
-        className="w-10 h-10 rounded-full text-muted-foreground hover:text-foreground"
-        aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-      >
-        {isDark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
-      </Button>
+      <div className="mt-auto flex flex-col items-center gap-3">
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={onBellClick}
+          className="w-10 h-10 rounded-full text-muted-foreground hover:text-foreground relative"
+          aria-label="Notifications"
+        >
+          <Bell className="h-5 w-5" />
+          {unreadCount > 0 && (
+            <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold px-1">
+              {unreadCount > 99 ? '99+' : unreadCount}
+            </span>
+          )}
+        </Button>
 
-      <Button
-        variant="ghost"
-        size="icon"
-        onClick={onAddProfile}
-        className="w-10 h-10 rounded-full text-muted-foreground hover:text-foreground hover:bg-accent"
-        aria-label="Add profile"
-        title="Add profile"
-      >
-        <Plus className="h-5 w-5" />
-      </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => setTheme(isDark ? 'light' : 'dark')}
+          className="w-10 h-10 rounded-full text-muted-foreground hover:text-foreground"
+          aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+        >
+          {isDark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+        </Button>
+
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={onSettingsClick}
+          className={`w-10 h-10 rounded-full text-muted-foreground hover:text-foreground ${settingsActive ? 'bg-accent text-foreground' : ''}`}
+          aria-label="Settings"
+          title="Settings"
+        >
+          <Settings className="h-5 w-5" />
+        </Button>
+      </div>
     </nav>
   )
 }

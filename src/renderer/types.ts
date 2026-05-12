@@ -1,5 +1,5 @@
-export type { Pane, Tab, Profile, QuickText, SplitNode, SplitDirection, NotificationItem } from '../shared/types'
-import type { Pane, Tab, Profile, SplitDirection } from '../shared/types'
+export type { Pane, Tab, Profile, QuickText, SplitNode, SplitDirection, NotificationItem, MediaState } from '../shared/types'
+import type { Pane, Tab, Profile, SplitDirection, MediaState } from '../shared/types'
 
 export interface ElectronAPI {
   // Profiles
@@ -41,6 +41,10 @@ export interface ElectronAPI {
   // Notifications
   onNotification(callback: (data: { profileId: string; paneId: string; title: string; body: string; icon?: string }) => void): () => void
 
+  // Media
+  getMediaState(): Promise<MediaState | null>
+  onMediaState(callback: (state: MediaState | null) => void): () => void
+
   // Events
   onPaneUrlChanged(callback: (data: { profileId: string; paneId: string; tabId: string; url: string }) => void): () => void
   onPaneNavState(callback: (data: { profileId: string; paneId: string; tabId: string; canGoBack: boolean; canGoForward: boolean }) => void): () => void
@@ -48,8 +52,10 @@ export interface ElectronAPI {
   onProfileSwitch(callback: (profileId: string) => void): () => void
 
   // Settings
-  getSettings(): Promise<{ adblockEnabled: boolean }>
-  setAdblockEnabled(enabled: boolean): Promise<{ success: boolean }>
+  getSettings(): Promise<{ adblockEnabled: boolean; adblockFilterIds: string[] }>
+  setAdblockEnabled(enabled: boolean): Promise<{ success: boolean; settings?: { adblockEnabled: boolean; adblockFilterIds: string[] } }>
+  setAdblockFilterIds(filterIds: string[]): Promise<{ success: boolean; settings?: { adblockEnabled: boolean; adblockFilterIds: string[] } }>
+  setAdblockSettings(enabled: boolean, filterIds: string[]): Promise<{ success: boolean; settings?: { adblockEnabled: boolean; adblockFilterIds: string[] } }>
 }
 
 declare global {

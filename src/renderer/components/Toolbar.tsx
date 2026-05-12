@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { Pencil, Trash2, Check, X, MoreHorizontal } from 'lucide-react'
+import { Pencil, Trash2, Check, X, MoreHorizontal, Music, Settings } from 'lucide-react'
 import { WindowControls } from './WindowControls'
 import { DynamicIsland, type ConfirmRequest } from './DynamicIsland'
 import { Input } from './ui/input'
-import type { NotificationItem } from '../types'
+import type { MediaState, NotificationItem } from '../types'
 
 interface ToolbarProps {
   profileName: string
@@ -13,9 +13,49 @@ interface ToolbarProps {
   onRemoveProfile: () => void
   adblockEnabled: boolean
   onAdblockToggle: (enabled: boolean) => void
+  onSettingsClick: () => void
+  mediaState: MediaState | null
+  onMediaFocus: () => void
 }
 
-export function Toolbar({ profileName, notifications, onNotificationClick, onRenameProfile, onRemoveProfile, adblockEnabled, onAdblockToggle }: ToolbarProps) {
+function MusicControls({
+  mediaState,
+  onMediaFocus,
+}: {
+  mediaState: MediaState | null
+  onMediaFocus: () => void
+}) {
+  if (!mediaState) return null
+
+  return (
+    <div className="hidden max-w-[360px] items-center gap-1.5 sm:flex">
+      <button
+        className="flex min-w-0 max-w-48 items-center gap-2 rounded-md px-1 py-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        onClick={onMediaFocus}
+        aria-label="Open playing tab"
+        title="Open playing tab"
+      >
+        <Music className="size-3.5 flex-shrink-0" />
+        <span className="truncate text-[11px] font-medium text-foreground">
+          {mediaState.title}
+        </span>
+      </button>
+    </div>
+  )
+}
+
+export function Toolbar({
+  profileName,
+  notifications,
+  onNotificationClick,
+  onRenameProfile,
+  onRemoveProfile,
+  adblockEnabled,
+  onAdblockToggle,
+  onSettingsClick,
+  mediaState,
+  onMediaFocus,
+}: ToolbarProps) {
   const isWindows = navigator.userAgent.includes('Windows')
   const [isRenaming, setIsRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(profileName)
@@ -85,6 +125,16 @@ export function Toolbar({ profileName, notifications, onNotificationClick, onRen
 
           {settingsOpen && (
             <div className="absolute left-0 top-full mt-1 z-50 min-w-[180px] rounded-lg border border-border bg-popover shadow-md p-1">
+              <button
+                className="flex h-8 w-full items-center gap-2 rounded-md px-3 text-left text-xs text-foreground hover:bg-accent"
+                onClick={() => {
+                  setSettingsOpen(false)
+                  onSettingsClick()
+                }}
+              >
+                <Settings className="h-3.5 w-3.5 text-muted-foreground" />
+                Settings
+              </button>
               <div
                 className="flex items-center justify-between px-3 h-8 rounded-md hover:bg-accent cursor-pointer select-none"
                 onClick={() => onAdblockToggle(!adblockEnabled)}
@@ -147,6 +197,10 @@ export function Toolbar({ profileName, notifications, onNotificationClick, onRen
           onNotificationClick={onNotificationClick}
           confirmRequest={confirmRequest}
         />
+      </div>
+
+      <div className="flex flex-shrink-0 items-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+        <MusicControls mediaState={mediaState} onMediaFocus={onMediaFocus} />
       </div>
 
       {isWindows && (

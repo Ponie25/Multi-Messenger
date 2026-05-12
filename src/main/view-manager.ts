@@ -2,13 +2,36 @@ import { BrowserWindow, WebContentsView, session } from 'electron'
 import path from 'path'
 import { Pane, Tab } from './store'
 import { SIDEBAR_WIDTH, TOOLBAR_HEIGHT } from '../shared/constants'
-import { SplitNode } from '../shared/types'
+import { MediaState, SplitNode } from '../shared/types'
 import { calculateBounds, getAllLeafPaneIds, Rect } from '../shared/split-tree'
 
 const CHROME_UA_MAC =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 const CHROME_UA_WIN =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+const MEDIA_STATE_SCRIPT = `
+  (() => {
+    const media = Array.from(document.querySelectorAll('audio, video'));
+    const active = media.find((el) => !el.paused && !el.ended)
+      || media.find((el) => el.readyState > 0 && el.currentTime > 0);
+    const metadata = navigator.mediaSession && navigator.mediaSession.metadata;
+    const metaTitle = document.querySelector('meta[property="og:title"], meta[name="title"]');
+    const title = (metadata && metadata.title)
+      || (metaTitle && metaTitle.content)
+      || document.title
+      || location.hostname;
+    const artist = (metadata && (metadata.artist || metadata.album)) || '';
+
+    return {
+      title: String(title || '').replace(/\\s+/g, ' ').trim(),
+      artist: String(artist || '').replace(/\\s+/g, ' ').trim(),
+      source: location.hostname.replace(/^www\\./, ''),
+      url: location.href,
+      isPlaying: Boolean(active && !active.paused && !active.ended),
+      hasMedia: media.length > 0 || Boolean(metadata),
+    };
+  })()
+`
 
 function getChromeUA(): string {
   return process.platform === 'win32' ? CHROME_UA_WIN : CHROME_UA_MAC
@@ -38,9 +61,16 @@ export class ViewManager {
   private onNotification:
     | ((profileId: string, paneId: string, title: string, body: string, icon?: string) => void)
     | null = null
+  private onMediaState: ((state: MediaState | null) => void) | null = null
+  private mediaState: MediaState | null = null
+  private mediaPollTimer: NodeJS.Timeout | null = null
 
   constructor(win: BrowserWindow) {
     this.win = win
+    this.mediaPollTimer = setInterval(() => {
+      this.refreshMediaState()
+    }, 1500)
+    this.mediaPollTimer.unref()
   }
 
   setUrlChangedHandler(
@@ -65,6 +95,10 @@ export class ViewManager {
     handler: (profileId: string, paneId: string, title: string, body: string, icon?: string) => void
   ): void {
     this.onNotification = handler
+  }
+
+  setMediaStateHandler(handler: (state: MediaState | null) => void): void {
+    this.onMediaState = handler
   }
 
   async createProfile(profile: { id: string; panes: Pane[] }): Promise<void> {
@@ -290,6 +324,13 @@ export class ViewManager {
     })
     view.webContents.on('did-stop-loading', () => {
       this.win.webContents.send('pane:loading', { profileId, paneId, tabId: tab.id, loading: false })
+      this.updateMediaStateForTab(profileId, paneId, tab.id, view)
+    })
+    view.webContents.on('media-started-playing', () => {
+      this.updateMediaStateForTab(profileId, paneId, tab.id, view)
+    })
+    view.webContents.on('media-paused', () => {
+      this.updateMediaStateForTab(profileId, paneId, tab.id, view)
     })
 
     // Handle window.open — load in same view
@@ -327,6 +368,95 @@ export class ViewManager {
         view.webContents.navigationHistory.canGoForward()
       )
     }
+  }
+
+  private emitMediaState(state: MediaState | null): void {
+    const prev = JSON.stringify(this.mediaState)
+    const next = JSON.stringify(state)
+    this.mediaState = state
+    if (prev !== next && this.onMediaState) {
+      this.onMediaState(state)
+    }
+  }
+
+  private destroyTabView(view: WebContentsView): void {
+    view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+    try {
+      this.win.contentView.removeChildView(view)
+    } catch {}
+
+    if (view.webContents.isDestroyed()) return
+    try {
+      view.webContents.setAudioMuted(true)
+      view.webContents.stop()
+      view.webContents.close()
+    } catch {}
+  }
+
+  private async updateMediaStateForTab(
+    profileId: string,
+    paneId: string,
+    tabId: string,
+    view: WebContentsView
+  ): Promise<void> {
+    if (view.webContents.isDestroyed()) return
+    try {
+      const data = await view.webContents.executeJavaScript(MEDIA_STATE_SCRIPT, true)
+      const hasCurrentMedia =
+        data?.hasMedia || view.webContents.isCurrentlyAudible() || this.mediaState?.tabId === tabId
+
+      if (!hasCurrentMedia) return
+
+      if (!data?.isPlaying && this.mediaState?.tabId !== tabId) return
+
+      if (!data?.isPlaying && this.mediaState?.tabId === tabId && !view.webContents.isCurrentlyAudible()) {
+        this.emitMediaState({
+          ...this.mediaState,
+          isPlaying: false,
+        })
+        return
+      }
+
+      this.emitMediaState({
+        profileId,
+        paneId,
+        tabId,
+        title: data.title || data.source || 'Media',
+        artist: data.artist || undefined,
+        source: data.source || 'Media',
+        url: data.url || view.webContents.getURL(),
+        isPlaying: Boolean(data.isPlaying || view.webContents.isCurrentlyAudible()),
+      })
+    } catch {
+      if (this.mediaState?.tabId === tabId && !view.webContents.isCurrentlyAudible()) {
+        this.emitMediaState(null)
+      }
+    }
+  }
+
+  private refreshMediaState(): void {
+    const updates: Promise<void>[] = []
+    for (const [profileId, profileTabViews] of this.tabViews) {
+      for (const [tabId, view] of profileTabViews) {
+        const paneId = this.tabToPaneId.get(tabId)
+        if (!paneId) continue
+        if (view.webContents.isDestroyed()) continue
+        if (view.webContents.isCurrentlyAudible() || this.mediaState?.tabId === tabId) {
+          updates.push(this.updateMediaStateForTab(profileId, paneId, tabId, view))
+        }
+      }
+    }
+
+    if (updates.length === 0 && this.mediaState) {
+      this.emitMediaState(null)
+      return
+    }
+
+    Promise.all(updates).catch(() => {})
+  }
+
+  getMediaState(): MediaState | null {
+    return this.mediaState
   }
 
   private getRootRect(): Rect {
@@ -437,10 +567,12 @@ export class ViewManager {
     // Remove all tab views belonging to this pane
     for (const [tabId, view] of profileTabViews) {
       if (this.tabToPaneId.get(tabId) === paneId) {
-        view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
-        this.win.contentView.removeChildView(view)
+        this.destroyTabView(view)
         profileTabViews.delete(tabId)
         this.tabToPaneId.delete(tabId)
+        if (this.mediaState?.tabId === tabId) {
+          this.emitMediaState(null)
+        }
       }
     }
 
@@ -468,10 +600,12 @@ export class ViewManager {
     const view = profileTabViews.get(tabId)
     if (!view) return
 
-    view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
-    this.win.contentView.removeChildView(view)
+    this.destroyTabView(view)
     profileTabViews.delete(tabId)
     this.tabToPaneId.delete(tabId)
+    if (this.mediaState?.tabId === tabId) {
+      this.emitMediaState(null)
+    }
 
     // If this was the active tab, the caller is responsible for updating activeTabId
     // via setActiveTab before the next updateActiveBounds call
@@ -541,9 +675,12 @@ export class ViewManager {
     if (!profileTabViews) return
 
     for (const [tabId, view] of profileTabViews) {
-      view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
-      this.win.contentView.removeChildView(view)
+      const paneId = this.tabToPaneId.get(tabId)
+      this.destroyTabView(view)
       this.tabToPaneId.delete(tabId)
+      if (paneId) {
+        this.activeTabIds.delete(paneId)
+      }
     }
     profileTabViews.clear()
     this.tabViews.delete(profileId)
@@ -557,6 +694,9 @@ export class ViewManager {
     if (this.activeProfileId === profileId) {
       this.activeProfileId = null
       this.activeSplitTree = null
+    }
+    if (this.mediaState?.profileId === profileId) {
+      this.emitMediaState(null)
     }
   }
 

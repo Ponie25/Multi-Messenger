@@ -1,6 +1,6 @@
 {
   "name": "multimessenger",
-  "version": "3.2.0",
+  "version": "3.2.1",
   "description": "Multi-profile browser with split-screen support",
   "main": "dist/main/main/index.js",
   "scripts": {

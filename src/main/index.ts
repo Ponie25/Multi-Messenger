@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, Menu, session as electronSession } from 'e
 import path from 'path'
 import { ProfileStore } from './store'
 import { ViewManager } from './view-manager'
-import { initAdBlocker, enableBlockingForAllProfiles, enableBlockingForSession, disableBlockingForAllProfiles, isAdBlockerReady } from './adblocker'
+import { initAdBlocker, buildAdBlocker, replaceAdBlocker, enableBlockingForAllProfiles, enableBlockingForSession, disableBlockingForAllProfiles, disableBlockingForSession, isAdBlockerReady } from './adblocker'
 import type { SplitNode } from '../shared/types'
 
 const { randomUUID } = require('crypto') as { randomUUID: () => string }
@@ -10,8 +10,51 @@ const { randomUUID } = require('crypto') as { randomUUID: () => string }
 let mainWindow: BrowserWindow | null = null
 let viewManager: ViewManager | null = null
 const profileStore = new ProfileStore()
+let adblockApplyVersion = 0
+let adblockApplyRunning = false
+let adblockApplyQueued = false
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
+
+async function applyCurrentAdblockSettings(): Promise<void> {
+  const applyVersion = ++adblockApplyVersion
+  const settings = profileStore.getSettings()
+  const profiles = profileStore.getAll()
+  const profileIds = profiles.map((p) => p.id)
+
+  if (!settings.adblockEnabled) {
+    disableBlockingForAllProfiles(profileIds)
+    return
+  }
+
+  const nextBlocker = await buildAdBlocker(settings.adblockFilterIds)
+  if (applyVersion !== adblockApplyVersion) return
+  if (!nextBlocker) return
+
+  disableBlockingForAllProfiles(profileIds)
+  replaceAdBlocker(nextBlocker)
+  enableBlockingForAllProfiles(profileIds)
+}
+
+function queueAdblockApply(): void {
+  adblockApplyQueued = true
+  if (adblockApplyRunning) return
+
+  adblockApplyRunning = true
+  void (async () => {
+    try {
+      while (adblockApplyQueued) {
+        adblockApplyQueued = false
+        await applyCurrentAdblockSettings()
+      }
+    } catch (err) {
+      console.error('[adblocker] Failed to apply settings:', err)
+    } finally {
+      adblockApplyRunning = false
+      if (adblockApplyQueued) queueAdblockApply()
+    }
+  })()
+}
 
 function createWindow() {
   const isWin = process.platform === 'win32'
@@ -51,6 +94,9 @@ function createWindow() {
   viewManager.setNotificationHandler((profileId, paneId, title, body, icon) => {
     mainWindow?.webContents.send('notification:received', { profileId, paneId, title, body, icon })
   })
+  viewManager.setMediaStateHandler((state) => {
+    mainWindow?.webContents.send('media:state', state)
+  })
 
   mainWindow.on('resize', () => {
     viewManager?.updateActiveBounds()
@@ -78,7 +124,7 @@ app.whenReady().then(async () => {
   // Initialize ad blocker only if enabled in settings
   const settings = profileStore.getSettings()
   if (settings.adblockEnabled) {
-    initAdBlocker().then(() => {
+    initAdBlocker(settings.adblockFilterIds).then(() => {
       enableBlockingForAllProfiles(profiles.map((p) => p.id))
     }).catch(() => {})
   }
@@ -115,6 +161,9 @@ function registerIpcHandlers() {
     if (settings.adblockEnabled) {
       const partition = `persist:profile-${newProfile.id}`
       const profileSession = electronSession.fromPartition(partition)
+      if (!isAdBlockerReady()) {
+        await initAdBlocker(settings.adblockFilterIds)
+      }
       try { enableBlockingForSession(profileSession, partition) } catch {}
     }
 
@@ -133,6 +182,8 @@ function registerIpcHandlers() {
   ipcMain.handle('profile:remove', async (_event, profileId: string) => {
     if (!viewManager || !mainWindow) return { success: false }
     await viewManager.destroyProfile(profileId)
+    const partition = `persist:profile-${profileId}`
+    disableBlockingForSession(electronSession.fromPartition(partition), partition)
     profileStore.remove(profileId)
     const remaining = profileStore.getAll()
     if (remaining.length > 0) {
@@ -368,17 +419,29 @@ function registerIpcHandlers() {
 
   ipcMain.handle('settings:setAdblock', async (_event, enabled: boolean) => {
     profileStore.updateSettings({ adblockEnabled: enabled })
-    const profiles = profileStore.getAll()
-    const profileIds = profiles.map((p) => p.id)
-
-    if (enabled) {
-      if (!isAdBlockerReady()) {
-        await initAdBlocker()
-      }
-      enableBlockingForAllProfiles(profileIds)
-    } else {
-      disableBlockingForAllProfiles(profileIds)
-    }
-    return { success: true }
+    const settings = profileStore.getSettings()
+    queueAdblockApply()
+    return { success: true, settings }
   })
+
+  ipcMain.handle('settings:setAdblockFilters', async (_event, filterIds: unknown) => {
+    const nextFilterIds = Array.isArray(filterIds) ? filterIds.filter((id): id is string => typeof id === 'string') : []
+    profileStore.updateSettings({ adblockFilterIds: nextFilterIds })
+    const settings = profileStore.getSettings()
+    queueAdblockApply()
+
+    return { success: true, settings }
+  })
+
+  ipcMain.handle('settings:setAdblockSettings', async (_event, enabled: boolean, filterIds: unknown) => {
+    const nextFilterIds = Array.isArray(filterIds) ? filterIds.filter((id): id is string => typeof id === 'string') : []
+    profileStore.updateSettings({ adblockEnabled: enabled, adblockFilterIds: nextFilterIds })
+    const settings = profileStore.getSettings()
+    await applyCurrentAdblockSettings()
+
+    return { success: true, settings }
+  })
+
+  // Media controls
+  ipcMain.handle('media:getState', () => viewManager?.getMediaState() ?? null)
 }
