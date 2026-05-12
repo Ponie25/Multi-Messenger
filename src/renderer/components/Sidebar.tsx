@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react'
+import React, { useCallback } from 'react'
 import {
   DndContext,
   closestCenter,
@@ -28,31 +28,19 @@ interface SidebarProps {
   unreadCount: number
   onAddProfile: () => void
   onSwitchProfile: (profileId: string) => void
-  onRemoveProfile: (profileId: string) => void
-  onRenameProfile: (profileId: string, name: string) => void
   onReorder: (orderedIds: string[]) => void
   onBellClick: () => void
-}
-
-interface SortableProfileItemProps {
-  profile: Profile
-  isActive: boolean
-  isRenaming: boolean
-  onSwitch: () => void
-  onContextMenu: (e: React.MouseEvent) => void
-  onRenameSubmit: (name: string) => void
-  onRenameCancel: () => void
 }
 
 function SortableProfileItem({
   profile,
   isActive,
-  isRenaming,
   onSwitch,
-  onContextMenu,
-  onRenameSubmit,
-  onRenameCancel,
-}: SortableProfileItemProps) {
+}: {
+  profile: Profile
+  isActive: boolean
+  onSwitch: () => void
+}) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: profile.id,
   })
@@ -64,50 +52,13 @@ function SortableProfileItem({
   }
 
   return (
-    <div ref={setNodeRef} style={style} className="flex justify-center">
-      {isRenaming ? (
-        <RenameInput
-          defaultValue={profile.name}
-          onSubmit={onRenameSubmit}
-          onCancel={onRenameCancel}
-        />
-      ) : (
-        <div {...attributes} {...listeners}>
-          <ProfileAvatar
-            name={profile.name}
-            isActive={isActive}
-            onClick={onSwitch}
-            onContextMenu={onContextMenu}
-          />
-        </div>
-      )}
+    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+      <ProfileAvatar
+        name={profile.name}
+        isActive={isActive}
+        onClick={onSwitch}
+      />
     </div>
-  )
-}
-
-function RenameInput({
-  defaultValue,
-  onSubmit,
-  onCancel,
-}: {
-  defaultValue: string
-  onSubmit: (name: string) => void
-  onCancel: () => void
-}) {
-  const [value, setValue] = useState(defaultValue)
-
-  return (
-    <input
-      autoFocus
-      value={value}
-      onChange={(e) => setValue(e.target.value)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') onSubmit(value.trim() || defaultValue)
-        if (e.key === 'Escape') onCancel()
-      }}
-      onBlur={() => onSubmit(value.trim() || defaultValue)}
-      className="w-10 h-10 rounded-full text-center text-xs bg-muted border border-input outline-none focus:ring-1 focus:ring-ring"
-    />
   )
 }
 
@@ -117,28 +68,15 @@ export function Sidebar({
   unreadCount,
   onAddProfile,
   onSwitchProfile,
-  onRemoveProfile,
-  onRenameProfile,
   onReorder,
   onBellClick,
 }: SidebarProps) {
   const { resolvedTheme, setTheme } = useTheme()
-  const [renamingId, setRenamingId] = useState<string | null>(null)
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   )
-
-  const handleContextMenu = useCallback(async (e: React.MouseEvent, profileId: string) => {
-    e.preventDefault()
-    const result = await window.electronAPI.showProfileContextMenu(profileId)
-    if (result.action === 'remove') {
-      onRemoveProfile(profileId)
-    } else if (result.action === 'rename') {
-      setRenamingId(profileId)
-    }
-  }, [onRemoveProfile])
 
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
@@ -169,14 +107,7 @@ export function Sidebar({
                 key={profile.id}
                 profile={profile}
                 isActive={profile.id === activeProfileId}
-                isRenaming={profile.id === renamingId}
                 onSwitch={() => onSwitchProfile(profile.id)}
-                onContextMenu={(e) => handleContextMenu(e, profile.id)}
-                onRenameSubmit={(name) => {
-                  onRenameProfile(profile.id, name)
-                  setRenamingId(null)
-                }}
-                onRenameCancel={() => setRenamingId(null)}
               />
             ))}
           </div>

@@ -1,10 +1,10 @@
 import { ProfileStore, Profile, Pane } from '../store'
 import type { SplitNode } from '../../shared/types'
 
-let sharedData: { profiles: Profile[] } = { profiles: [] }
+let sharedData: { profiles: Profile[]; quickTexts: any[] } = { profiles: [], quickTexts: [] }
 
 jest.mock('electron-store', () => {
-  return jest.fn().mockImplementation(({ defaults }: { defaults: { profiles: Profile[] } }) => {
+  return jest.fn().mockImplementation(({ defaults }: { defaults: { profiles: Profile[]; quickTexts: any[] } }) => {
     if (sharedData.profiles.length === 0) {
       sharedData = { ...defaults }
     }
@@ -14,10 +14,15 @@ jest.mock('electron-store', () => {
       set: (key: string, value: unknown) => {
         ;(sharedData as any)[key] = value
       },
-      clear: () => { sharedData = { profiles: [] } },
+      clear: () => { sharedData = { profiles: [], quickTexts: [] } },
     }
   })
 })
+
+function makePane(id: string): Pane {
+  const tabId = `${id}-tab-0`
+  return { id, tabs: [{ id: tabId, url: '' }], activeTabId: tabId }
+}
 
 function makeProfile(overrides: Partial<Profile> = {}): Profile {
   const paneId = `pane-${overrides.id || 'test'}`
@@ -25,7 +30,7 @@ function makeProfile(overrides: Partial<Profile> = {}): Profile {
     id: 'test-id',
     name: 'Test Profile',
     order: 0,
-    panes: [{ id: paneId, url: '' }],
+    panes: [makePane(paneId)],
     splitTree: { type: 'leaf', paneId } as SplitNode,
     activePaneId: paneId,
     ...overrides,
@@ -36,7 +41,7 @@ describe('ProfileStore', () => {
   let store: ProfileStore
 
   beforeEach(() => {
-    sharedData = { profiles: [] }
+    sharedData = { profiles: [], quickTexts: [] }
     store = new ProfileStore()
   })
 
@@ -83,7 +88,7 @@ describe('ProfileStore', () => {
   describe('addPane()', () => {
     it('adds a pane to a profile', () => {
       store.add(makeProfile({ id: 'p1' }))
-      const pane: Pane = { id: 'new-pane', url: '' }
+      const pane = makePane('new-pane')
       const existingPaneId = store.getProfile('p1')!.panes[0].id
       const result = store.addPane('p1', pane, existingPaneId, 'horizontal')
       expect(result).toEqual(pane)
@@ -94,12 +99,7 @@ describe('ProfileStore', () => {
 
     it('enforces max 4 panes', () => {
       const profile = makeProfile({ id: 'p1' })
-      profile.panes = [
-        { id: 'pane1', url: '' },
-        { id: 'pane2', url: '' },
-        { id: 'pane3', url: '' },
-        { id: 'pane4', url: '' },
-      ]
+      profile.panes = [makePane('pane1'), makePane('pane2'), makePane('pane3'), makePane('pane4')]
       profile.splitTree = {
         type: 'branch', direction: 'horizontal', ratio: 0.5,
         children: [
@@ -108,7 +108,7 @@ describe('ProfileStore', () => {
         ],
       }
       store.add(profile)
-      const result = store.addPane('p1', { id: 'pane5', url: '' }, 'pane1', 'horizontal')
+      const result = store.addPane('p1', makePane('pane5'), 'pane1', 'horizontal')
       expect(result).toBeNull()
     })
   })
@@ -116,7 +116,7 @@ describe('ProfileStore', () => {
   describe('removePane()', () => {
     it('removes a pane', () => {
       const profile = makeProfile({ id: 'p1' })
-      profile.panes = [{ id: 'pane1', url: '' }, { id: 'pane2', url: '' }]
+      profile.panes = [makePane('pane1'), makePane('pane2')]
       profile.splitTree = {
         type: 'branch', direction: 'horizontal', ratio: 0.5,
         children: [{ type: 'leaf', paneId: 'pane1' }, { type: 'leaf', paneId: 'pane2' }],
@@ -137,12 +137,36 @@ describe('ProfileStore', () => {
     })
   })
 
-  describe('updatePane()', () => {
-    it('updates pane url', () => {
+  describe('updateTab()', () => {
+    it('updates tab url', () => {
+      store.add(makeProfile({ id: 'p1' }))
+      const profile = store.getProfile('p1')!
+      const paneId = profile.panes[0].id
+      const tabId = profile.panes[0].tabs[0].id
+      store.updateTab('p1', paneId, tabId, { url: 'https://example.com' })
+      expect(store.getProfile('p1')!.panes[0].tabs[0].url).toBe('https://example.com')
+    })
+  })
+
+  describe('addTab() / removeTab()', () => {
+    it('adds a tab to a pane', () => {
       store.add(makeProfile({ id: 'p1' }))
       const paneId = store.getProfile('p1')!.panes[0].id
-      store.updatePane('p1', paneId, { url: 'https://example.com' })
-      expect(store.getProfile('p1')!.panes[0].url).toBe('https://example.com')
+      const tab = store.addTab('p1', paneId)
+      expect(tab).not.toBeNull()
+      expect(store.getProfile('p1')!.panes[0].tabs).toHaveLength(2)
+      expect(store.getProfile('p1')!.panes[0].activeTabId).toBe(tab!.id)
+    })
+
+    it('removes a tab (keeps pane if not last)', () => {
+      store.add(makeProfile({ id: 'p1' }))
+      const paneId = store.getProfile('p1')!.panes[0].id
+      store.addTab('p1', paneId)
+      const tabs = store.getProfile('p1')!.panes[0].tabs
+      expect(tabs).toHaveLength(2)
+      const result = store.removeTab('p1', paneId, tabs[0].id)
+      expect(result.removedPane).toBe(false)
+      expect(store.getProfile('p1')!.panes[0].tabs).toHaveLength(1)
     })
   })
 })

@@ -115,3 +115,14 @@ html, body, #root {
     transform: scale(1);
   }
 }
+
+@property --ring-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes island-ring-spin {
+  from { --ring-angle: 0deg; }
+  to { --ring-angle: 360deg; }
+}

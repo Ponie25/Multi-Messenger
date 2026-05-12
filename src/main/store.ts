@@ -1,9 +1,9 @@
 import Store from 'electron-store'
 import { MAX_PANES_PER_PROFILE } from '../shared/constants'
-import { Profile, Pane, SplitNode, SplitDirection, QuickText } from '../shared/types'
+import { Profile, Pane, Tab, SplitNode, SplitDirection, QuickText } from '../shared/types'
 import { splitLeaf, removeLeaf, swapLeaves, countLeaves, getAllLeafPaneIds } from '../shared/split-tree'
 
-export type { Profile, Pane, QuickText }
+export type { Profile, Pane, Tab, QuickText }
 
 interface StoreSchema {
   profiles: Profile[]
@@ -16,6 +16,8 @@ interface LegacyAccount {
   name: string
   order: number
 }
+
+const { randomUUID } = require('crypto') as { randomUUID: () => string }
 
 export class ProfileStore {
   private store: Store<StoreSchema>
@@ -35,11 +37,12 @@ export class ProfileStore {
       const legacyAccounts: LegacyAccount[] = raw.accounts
       const profiles: Profile[] = legacyAccounts.map((acc) => {
         const paneId = `${acc.id}-pane-0`
+        const tabId = randomUUID()
         return {
           id: acc.id,
           name: acc.name || `Profile ${acc.order + 1}`,
           order: acc.order,
-          panes: [{ id: paneId, url: '' }],
+          panes: [{ id: paneId, tabs: [{ id: tabId, url: '' }], activeTabId: tabId }],
           splitTree: { type: 'leaf', paneId } as SplitNode,
           activePaneId: paneId,
         }
@@ -49,17 +52,31 @@ export class ProfileStore {
       return
     }
 
-    // Migrate profiles that have panes but no splitTree
+    // Migrate profiles that have panes but no splitTree, or old pane format (url instead of tabs)
     const profiles = this.store.get('profiles')
     let needsSave = false
     for (const profile of profiles) {
+      // Migrate old pane format: { id, url } → { id, tabs, activeTabId }
+      for (let i = 0; i < profile.panes.length; i++) {
+        const pane = profile.panes[i] as any
+        if (!pane.tabs) {
+          needsSave = true
+          const tabId = randomUUID()
+          profile.panes[i] = {
+            id: pane.id,
+            tabs: [{ id: tabId, url: pane.url || '' }],
+            activeTabId: tabId,
+          }
+        }
+      }
+
       if (!(profile as any).splitTree) {
         needsSave = true
         const panes = profile.panes
         if (panes.length === 0) {
-          // Edge case: profile with no panes — create a default pane
           const paneId = `${profile.id}-pane-0`
-          profile.panes = [{ id: paneId, url: '' }]
+          const tabId = randomUUID()
+          profile.panes = [{ id: paneId, tabs: [{ id: tabId, url: '' }], activeTabId: tabId }]
           profile.activePaneId = paneId
           ;(profile as any).splitTree = { type: 'leaf', paneId }
         } else if (panes.length === 1) {
@@ -165,29 +182,6 @@ export class ProfileStore {
     this.store.set('profiles', profiles)
   }
 
-  updateSplitRatio(profileId: string, paneId: string, ratio: number): void {
-    const profiles = this.store.get('profiles')
-    const profile = profiles.find((p) => p.id === profileId)
-    if (!profile) return
-
-    const updateRatio = (node: SplitNode): SplitNode => {
-      if (node.type === 'leaf') return node
-      // Update ratio if this branch contains the target pane as first child
-      const leftIds = getAllLeafPaneIds(node.children[0])
-      if (leftIds.includes(paneId)) {
-        // If paneId is directly the first child leaf, update this branch's ratio
-        if (node.children[0].type === 'leaf' && node.children[0].paneId === paneId) {
-          return { ...node, ratio }
-        }
-        return { ...node, children: [updateRatio(node.children[0]), node.children[1]] }
-      }
-      return { ...node, children: [node.children[0], updateRatio(node.children[1])] }
-    }
-
-    profile.splitTree = updateRatio(profile.splitTree)
-    this.store.set('profiles', profiles)
-  }
-
   updateSplitRatioByPath(profileId: string, path: number[], ratio: number): void {
     const profiles = this.store.get('profiles')
     const profile = profiles.find((p) => p.id === profileId)
@@ -219,19 +213,99 @@ export class ProfileStore {
     return true
   }
 
-  updatePane(profileId: string, paneId: string, changes: Partial<Omit<Pane, 'id'>>): void {
+  getProfile(id: string): Profile | undefined {
+    return this.store.get('profiles').find((p) => p.id === id)
+  }
+
+  // Tab methods
+  addTab(profileId: string, paneId: string): Tab | null {
+    const profiles = this.store.get('profiles')
+    const profile = profiles.find((p) => p.id === profileId)
+    if (!profile) return null
+    const pane = profile.panes.find((p) => p.id === paneId)
+    if (!pane) return null
+
+    const tab: Tab = { id: randomUUID(), url: '' }
+    pane.tabs.push(tab)
+    pane.activeTabId = tab.id
+    this.store.set('profiles', profiles)
+    return tab
+  }
+
+  removeTab(profileId: string, paneId: string, tabId: string): { removedPane: boolean } {
+    const profiles = this.store.get('profiles')
+    const profile = profiles.find((p) => p.id === profileId)
+    if (!profile) return { removedPane: false }
+    const pane = profile.panes.find((p) => p.id === paneId)
+    if (!pane) return { removedPane: false }
+
+    if (pane.tabs.length <= 1) {
+      // Last tab — remove the entire pane
+      this.removePane(profileId, paneId)
+      return { removedPane: true }
+    }
+
+    const idx = pane.tabs.findIndex((t) => t.id === tabId)
+    if (idx === -1) return { removedPane: false }
+
+    pane.tabs.splice(idx, 1)
+    if (pane.activeTabId === tabId) {
+      pane.activeTabId = pane.tabs[Math.min(idx, pane.tabs.length - 1)].id
+    }
+    this.store.set('profiles', profiles)
+    return { removedPane: false }
+  }
+
+  setActiveTab(profileId: string, paneId: string, tabId: string): void {
     const profiles = this.store.get('profiles')
     const profile = profiles.find((p) => p.id === profileId)
     if (!profile) return
     const pane = profile.panes.find((p) => p.id === paneId)
-    if (pane) {
-      Object.assign(pane, changes)
-      this.store.set('profiles', profiles)
-    }
+    if (!pane) return
+    pane.activeTabId = tabId
+    this.store.set('profiles', profiles)
   }
 
-  getProfile(id: string): Profile | undefined {
-    return this.store.get('profiles').find((p) => p.id === id)
+  moveTab(profileId: string, fromPaneId: string, tabId: string, toPaneId: string): { removedPane: boolean } {
+    const profiles = this.store.get('profiles')
+    const profile = profiles.find((p) => p.id === profileId)
+    if (!profile) return { removedPane: false }
+
+    const fromPane = profile.panes.find((p) => p.id === fromPaneId)
+    const toPane = profile.panes.find((p) => p.id === toPaneId)
+    if (!fromPane || !toPane) return { removedPane: false }
+
+    const tabIdx = fromPane.tabs.findIndex((t) => t.id === tabId)
+    if (tabIdx === -1) return { removedPane: false }
+
+    const [tab] = fromPane.tabs.splice(tabIdx, 1)
+    toPane.tabs.push(tab)
+    toPane.activeTabId = tab.id
+
+    if (fromPane.tabs.length === 0) {
+      this.store.set('profiles', profiles)
+      this.removePane(profileId, fromPaneId)
+      return { removedPane: true }
+    }
+
+    if (fromPane.activeTabId === tabId) {
+      fromPane.activeTabId = fromPane.tabs[Math.min(tabIdx, fromPane.tabs.length - 1)].id
+    }
+    this.store.set('profiles', profiles)
+    return { removedPane: false }
+  }
+
+  updateTab(profileId: string, paneId: string, tabId: string, changes: Partial<Omit<Tab, 'id'>>): void {
+    const profiles = this.store.get('profiles')
+    const profile = profiles.find((p) => p.id === profileId)
+    if (!profile) return
+    const pane = profile.panes.find((p) => p.id === paneId)
+    if (!pane) return
+    const tab = pane.tabs.find((t) => t.id === tabId)
+    if (tab) {
+      Object.assign(tab, changes)
+      this.store.set('profiles', profiles)
+    }
   }
 
   // Quick Text methods

@@ -11,19 +11,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
   showProfileContextMenu: (profileId: string) => ipcRenderer.invoke('profile:contextMenu', profileId),
 
   // Panes
-  navigatePane: (profileId: string, paneId: string, url: string) =>
-    ipcRenderer.invoke('pane:navigate', profileId, paneId, url),
+  navigatePane: (profileId: string, paneId: string, tabId: string, url: string) =>
+    ipcRenderer.invoke('pane:navigate', profileId, paneId, tabId, url),
   addPane: (profileId: string, targetPaneId: string, direction: string) =>
     ipcRenderer.invoke('pane:add', profileId, targetPaneId, direction),
   removePane: (profileId: string, paneId: string) => ipcRenderer.invoke('pane:remove', profileId, paneId),
   setActivePane: (profileId: string, paneId: string) => ipcRenderer.invoke('pane:setActive', profileId, paneId),
-  goBack: (profileId: string, paneId: string) => ipcRenderer.invoke('pane:goBack', profileId, paneId),
-  goForward: (profileId: string, paneId: string) => ipcRenderer.invoke('pane:goForward', profileId, paneId),
-  reloadPane: (profileId: string, paneId: string) => ipcRenderer.invoke('pane:reload', profileId, paneId),
+  goBack: (profileId: string, paneId: string, tabId: string) => ipcRenderer.invoke('pane:goBack', profileId, paneId, tabId),
+  goForward: (profileId: string, paneId: string, tabId: string) => ipcRenderer.invoke('pane:goForward', profileId, paneId, tabId),
+  reloadPane: (profileId: string, paneId: string, tabId: string) => ipcRenderer.invoke('pane:reload', profileId, paneId, tabId),
   swapPanes: (profileId: string, paneIdA: string, paneIdB: string) =>
     ipcRenderer.invoke('pane:swap', profileId, paneIdA, paneIdB),
   updateSplitRatio: (profileId: string, path: number[], ratio: number) =>
     ipcRenderer.invoke('pane:updateRatio', profileId, path, ratio),
+
+  // Tabs
+  addTab: (profileId: string, paneId: string) => ipcRenderer.invoke('tab:add', profileId, paneId),
+  removeTab: (profileId: string, paneId: string, tabId: string) => ipcRenderer.invoke('tab:remove', profileId, paneId, tabId),
+  setActiveTab: (profileId: string, paneId: string, tabId: string) => ipcRenderer.invoke('tab:setActive', profileId, paneId, tabId),
+  moveTab: (profileId: string, fromPaneId: string, tabId: string, toPaneId: string) =>
+    ipcRenderer.invoke('tab:move', profileId, fromPaneId, tabId, toPaneId),
 
   // Window controls
   windowMinimize: () => ipcRenderer.send('window:minimize'),
@@ -43,17 +50,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // Events
-  onPaneUrlChanged: (callback: (data: { profileId: string; paneId: string; url: string }) => void) => {
+  onPaneUrlChanged: (callback: (data: { profileId: string; paneId: string; tabId: string; url: string }) => void) => {
     const handler = (_event: any, data: any) => callback(data)
     ipcRenderer.on('pane:urlChanged', handler)
     return () => ipcRenderer.removeListener('pane:urlChanged', handler)
   },
-  onPaneNavState: (callback: (data: { profileId: string; paneId: string; canGoBack: boolean; canGoForward: boolean }) => void) => {
+  onPaneNavState: (callback: (data: { profileId: string; paneId: string; tabId: string; canGoBack: boolean; canGoForward: boolean }) => void) => {
     const handler = (_event: any, data: any) => callback(data)
     ipcRenderer.on('pane:navState', handler)
     return () => ipcRenderer.removeListener('pane:navState', handler)
   },
-  onPaneLoading: (callback: (data: { profileId: string; paneId: string; loading: boolean }) => void) => {
+  onPaneLoading: (callback: (data: { profileId: string; paneId: string; tabId: string; loading: boolean }) => void) => {
     const handler = (_event: any, data: any) => callback(data)
     ipcRenderer.on('pane:loading', handler)
     return () => ipcRenderer.removeListener('pane:loading', handler)

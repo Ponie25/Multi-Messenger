@@ -6,7 +6,6 @@ interface ProfileAvatarProps {
   name: string
   isActive: boolean
   onClick: () => void
-  onContextMenu: (e: React.MouseEvent) => void
 }
 
 function getInitials(name: string): string {
@@ -26,12 +25,10 @@ export function ProfileAvatar({
   name,
   isActive,
   onClick,
-  onContextMenu,
 }: ProfileAvatarProps) {
   return (
     <button
       onClick={onClick}
-      onContextMenu={onContextMenu}
       className={cn(
         'relative flex flex-col items-center gap-1 transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-lg p-1',
       )}

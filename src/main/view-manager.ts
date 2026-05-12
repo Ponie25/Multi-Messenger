@@ -1,9 +1,9 @@
 import { BrowserWindow, WebContentsView, session } from 'electron'
 import path from 'path'
-import { Pane } from './store'
-import { SIDEBAR_WIDTH, ADDRESS_BAR_HEIGHT, TOOLBAR_HEIGHT, PANE_GAP } from '../shared/constants'
+import { Pane, Tab } from './store'
+import { SIDEBAR_WIDTH, TOOLBAR_HEIGHT } from '../shared/constants'
 import { SplitNode } from '../shared/types'
-import { calculateBounds, Rect } from '../shared/split-tree'
+import { calculateBounds, getAllLeafPaneIds, Rect } from '../shared/split-tree'
 
 const CHROME_UA_MAC =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
@@ -16,43 +16,86 @@ function getChromeUA(): string {
 
 export class ViewManager {
   private win: BrowserWindow
-  private paneViews: Map<string, Map<string, WebContentsView>> = new Map()
+
+  // profileId → (tabId → WebContentsView)
+  private tabViews: Map<string, Map<string, WebContentsView>> = new Map()
+
+  // paneId → active tabId
+  private activeTabIds: Map<string, string> = new Map()
+
+  // tabId → paneId
+  private tabToPaneId: Map<string, string> = new Map()
+
   private activeProfileId: string | null = null
   private activeSplitTree: SplitNode | null = null
-  private onUrlChanged: ((profileId: string, paneId: string, url: string) => void) | null = null
-  private onNavState: ((profileId: string, paneId: string, canGoBack: boolean, canGoForward: boolean) => void) | null = null
-  private onNotification: ((profileId: string, paneId: string, title: string, body: string, icon?: string) => void) | null = null
+
+  private onUrlChanged:
+    | ((profileId: string, paneId: string, tabId: string, url: string) => void)
+    | null = null
+  private onNavState:
+    | ((profileId: string, paneId: string, tabId: string, canGoBack: boolean, canGoForward: boolean) => void)
+    | null = null
+  private onNotification:
+    | ((profileId: string, paneId: string, title: string, body: string, icon?: string) => void)
+    | null = null
 
   constructor(win: BrowserWindow) {
     this.win = win
   }
 
-  setUrlChangedHandler(handler: (profileId: string, paneId: string, url: string) => void): void {
+  setUrlChangedHandler(
+    handler: (profileId: string, paneId: string, tabId: string, url: string) => void
+  ): void {
     this.onUrlChanged = handler
   }
 
-  setNavStateHandler(handler: (profileId: string, paneId: string, canGoBack: boolean, canGoForward: boolean) => void): void {
+  setNavStateHandler(
+    handler: (
+      profileId: string,
+      paneId: string,
+      tabId: string,
+      canGoBack: boolean,
+      canGoForward: boolean
+    ) => void
+  ): void {
     this.onNavState = handler
   }
 
-  setNotificationHandler(handler: (profileId: string, paneId: string, title: string, body: string, icon?: string) => void): void {
+  setNotificationHandler(
+    handler: (profileId: string, paneId: string, title: string, body: string, icon?: string) => void
+  ): void {
     this.onNotification = handler
   }
 
   async createProfile(profile: { id: string; panes: Pane[] }): Promise<void> {
-    const profileViews = new Map<string, WebContentsView>()
-    this.paneViews.set(profile.id, profileViews)
+    const profileTabViews = new Map<string, WebContentsView>()
+    this.tabViews.set(profile.id, profileTabViews)
 
     for (const pane of profile.panes) {
-      const view = this.createPaneView(profile.id, pane)
-      profileViews.set(pane.id, view)
+      // Track the active tab for this pane
+      this.activeTabIds.set(pane.id, pane.activeTabId)
+
+      for (const tab of pane.tabs) {
+        const view = this.createTabView(profile.id, pane.id, tab)
+        profileTabViews.set(tab.id, view)
+        this.tabToPaneId.set(tab.id, pane.id)
+      }
     }
   }
 
-  private createPaneView(profileId: string, pane: Pane): WebContentsView {
+  private createTabView(profileId: string, paneId: string, tab: Tab): WebContentsView {
     const partition = `persist:profile-${profileId}`
     const profileSession = session.fromPartition(partition)
     profileSession.setUserAgent(getChromeUA())
+
+    // Auto-grant notification permission so sites see "granted" immediately
+    profileSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+      if (permission === 'notifications') {
+        callback(true)
+      } else {
+        callback(true)
+      }
+    })
 
     const preloadPath = path.join(__dirname, '../preload/pane.js')
 
@@ -68,61 +111,155 @@ export class ViewManager {
     this.win.contentView.addChildView(view)
     view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
     view.setBorderRadius(7)
+    view.webContents.setMaxListeners(20)
 
-    if (pane.url) {
-      view.webContents.loadURL(pane.url)
+    if (tab.url) {
+      view.webContents.loadURL(tab.url).catch(() => {})
     }
 
     // Track navigation events
     view.webContents.on('did-navigate', () => {
-      this.emitNavEvents(profileId, pane.id, view)
+      this.emitNavEvents(profileId, paneId, tab.id, view)
     })
     view.webContents.on('did-navigate-in-page', () => {
-      this.emitNavEvents(profileId, pane.id, view)
+      this.emitNavEvents(profileId, paneId, tab.id, view)
     })
 
-    // Inject minimal scrollbar CSS into every page
+    // Inject notification override into the page's main world on dom-ready
+    // (fires before page scripts, ensuring override is in place when sites check Notification.permission)
+    const notificationScript = `
+      (function() {
+        if (window.__notificationIntercepted) return;
+        window.__notificationIntercepted = true;
+
+        function InterceptedNotification(title, options) {
+          var opts = options || {};
+          // Get favicon from the page
+          var favicon = '';
+          try {
+            var links = document.querySelectorAll('link[rel*="icon"]');
+            for (var i = 0; i < links.length; i++) {
+              var l = links[i];
+              if (l.href) { favicon = l.href; break; }
+            }
+            if (!favicon) {
+              favicon = location.origin + '/favicon.ico';
+            }
+          } catch(e) {
+            favicon = location.origin + '/favicon.ico';
+          }
+          var iconUrl = opts.icon || favicon;
+          // Resolve relative URLs
+          if (iconUrl && !iconUrl.startsWith('http') && !iconUrl.startsWith('data:')) {
+            try { iconUrl = new URL(iconUrl, location.href).href; } catch(e) {}
+          }
+          window.postMessage({
+            type: '__electron_notification__',
+            title: title,
+            body: opts.body || '',
+            icon: iconUrl
+          }, '*');
+          this.title = title;
+          this.body = opts.body || '';
+          this.icon = opts.icon || '';
+          this.onclick = null;
+          this.onclose = null;
+          this.onerror = null;
+          this.onshow = null;
+          this.close = function() {};
+          this.addEventListener = function() {};
+          this.removeEventListener = function() {};
+          this.dispatchEvent = function() { return true; };
+        }
+
+        InterceptedNotification.requestPermission = function(callback) {
+          var result = Promise.resolve('granted');
+          if (callback) callback('granted');
+          return result;
+        };
+        InterceptedNotification.maxActions = 2;
+
+        Object.defineProperty(InterceptedNotification, 'permission', {
+          get: function() { return 'granted'; },
+          configurable: true
+        });
+
+        window.Notification = InterceptedNotification;
+
+        if (navigator.serviceWorker && ServiceWorkerRegistration.prototype.showNotification) {
+          ServiceWorkerRegistration.prototype.showNotification = function(title, options) {
+            var opts = options || {};
+            window.postMessage({
+              type: '__electron_notification__',
+              title: title,
+              body: opts.body || '',
+              icon: opts.icon || ''
+            }, '*');
+            return Promise.resolve();
+          };
+        }
+      })();
+    `
+
+    view.webContents.on('dom-ready', () => {
+      if (view.webContents.isDestroyed()) return
+      view.webContents.executeJavaScript(notificationScript).catch(() => {})
+    })
+
+    // Inject minimal scrollbar CSS
     view.webContents.on('did-finish-load', () => {
+      if (view.webContents.isDestroyed()) return
       view.webContents.insertCSS(`
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.25); border-radius: 3px; }
         ::-webkit-scrollbar-thumb:hover { background: rgba(128,128,128,0.45); }
         ::-webkit-scrollbar-corner { background: transparent; }
-      `)
+      `).catch(() => {})
     })
 
     // Track loading state
     view.webContents.on('did-start-loading', () => {
-      this.win.webContents.send('pane:loading', { profileId, paneId: pane.id, loading: true })
+      this.win.webContents.send('pane:loading', { profileId, paneId, tabId: tab.id, loading: true })
     })
     view.webContents.on('did-stop-loading', () => {
-      this.win.webContents.send('pane:loading', { profileId, paneId: pane.id, loading: false })
+      this.win.webContents.send('pane:loading', { profileId, paneId, tabId: tab.id, loading: false })
     })
 
     // Handle window.open — load in same view
     view.webContents.setWindowOpenHandler(({ url }) => {
-      view.webContents.loadURL(url)
+      view.webContents.loadURL(url).catch(() => {})
       return { action: 'deny' }
     })
 
     // Listen for notification IPC from pane preload
     view.webContents.ipc.on('pane:notification', (_event, data: { title: string; body: string; icon?: string }) => {
       if (this.onNotification) {
-        this.onNotification(profileId, pane.id, data.title, data.body, data.icon)
+        this.onNotification(profileId, paneId, data.title, data.body, data.icon)
       }
     })
 
     return view
   }
 
-  private emitNavEvents(profileId: string, paneId: string, view: WebContentsView): void {
+  private emitNavEvents(
+    profileId: string,
+    paneId: string,
+    tabId: string,
+    view: WebContentsView
+  ): void {
     const url = view.webContents.getURL()
     if (this.onUrlChanged) {
-      this.onUrlChanged(profileId, paneId, url)
+      this.onUrlChanged(profileId, paneId, tabId, url)
     }
     if (this.onNavState) {
-      this.onNavState(profileId, paneId, view.webContents.canGoBack(), view.webContents.canGoForward())
+      this.onNavState(
+        profileId,
+        paneId,
+        tabId,
+        view.webContents.navigationHistory.canGoBack(),
+        view.webContents.navigationHistory.canGoForward()
+      )
     }
   }
 
@@ -139,7 +276,7 @@ export class ViewManager {
   showProfile(profileId: string, splitTree?: SplitNode): void {
     // Hide current active profile views
     if (this.activeProfileId && this.activeProfileId !== profileId) {
-      const currentViews = this.paneViews.get(this.activeProfileId)
+      const currentViews = this.tabViews.get(this.activeProfileId)
       if (currentViews) {
         for (const view of currentViews.values()) {
           view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
@@ -156,21 +293,41 @@ export class ViewManager {
 
   updateActiveBounds(): void {
     if (!this.activeProfileId || !this.activeSplitTree) return
-    const views = this.paneViews.get(this.activeProfileId)
-    if (!views || views.size === 0) return
+    const profileTabViews = this.tabViews.get(this.activeProfileId)
+    if (!profileTabViews || profileTabViews.size === 0) return
 
     const rootRect = this.getRootRect()
     const bounds = calculateBounds(this.activeSplitTree, rootRect)
 
-    for (const [paneId, rect] of bounds) {
-      const view = views.get(paneId)
-      if (view) {
-        view.setBounds({
-          x: Math.round(rect.x),
-          y: Math.round(rect.y),
-          width: Math.max(0, Math.round(rect.width)),
-          height: Math.max(0, Math.round(rect.height)),
-        })
+    // Collect all pane IDs in the active split tree
+    const activePaneIds = new Set(getAllLeafPaneIds(this.activeSplitTree))
+
+    // For each pane in the tree, position its active tab and hide all others
+    for (const paneId of activePaneIds) {
+      const rect = bounds.get(paneId)
+      const activeTabId = this.activeTabIds.get(paneId)
+
+      for (const [tabId, view] of profileTabViews) {
+        if (this.tabToPaneId.get(tabId) !== paneId) continue
+
+        if (rect && tabId === activeTabId) {
+          view.setBounds({
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            width: Math.max(0, Math.round(rect.width)),
+            height: Math.max(0, Math.round(rect.height)),
+          })
+        } else {
+          view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+        }
+      }
+    }
+
+    // Hide views belonging to panes not in the active tree
+    for (const [tabId, view] of profileTabViews) {
+      const paneId = this.tabToPaneId.get(tabId)
+      if (!paneId || !activePaneIds.has(paneId)) {
+        view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
       }
     }
   }
@@ -182,41 +339,102 @@ export class ViewManager {
     }
   }
 
-  async addPane(profileId: string, pane: Pane, splitTree?: SplitNode): Promise<WebContentsView> {
-    let profileViews = this.paneViews.get(profileId)
-    if (!profileViews) {
-      profileViews = new Map()
-      this.paneViews.set(profileId, profileViews)
+  async addPane(profileId: string, pane: Pane, splitTree?: SplitNode): Promise<WebContentsView | null> {
+    let profileTabViews = this.tabViews.get(profileId)
+    if (!profileTabViews) {
+      profileTabViews = new Map()
+      this.tabViews.set(profileId, profileTabViews)
     }
 
-    const view = this.createPaneView(profileId, pane)
-    profileViews.set(pane.id, view)
+    this.activeTabIds.set(pane.id, pane.activeTabId)
+
+    for (const tab of pane.tabs) {
+      const view = this.createTabView(profileId, pane.id, tab)
+      profileTabViews.set(tab.id, view)
+      this.tabToPaneId.set(tab.id, pane.id)
+    }
 
     if (this.activeProfileId === profileId && splitTree) {
       this.activeSplitTree = splitTree
       this.updateActiveBounds()
     }
 
-    return view
+    // Return the active tab's view for the new pane
+    const activeView = profileTabViews.get(pane.activeTabId)
+    return activeView ?? null
   }
 
   async removePane(profileId: string, paneId: string): Promise<void> {
-    const profileViews = this.paneViews.get(profileId)
-    if (!profileViews) return
+    const profileTabViews = this.tabViews.get(profileId)
+    if (!profileTabViews) return
 
-    const view = profileViews.get(paneId)
+    // Remove all tab views belonging to this pane
+    for (const [tabId, view] of profileTabViews) {
+      if (this.tabToPaneId.get(tabId) === paneId) {
+        view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+        this.win.contentView.removeChildView(view)
+        profileTabViews.delete(tabId)
+        this.tabToPaneId.delete(tabId)
+      }
+    }
+
+    this.activeTabIds.delete(paneId)
+  }
+
+  addTab(profileId: string, paneId: string, tab: Tab): WebContentsView {
+    let profileTabViews = this.tabViews.get(profileId)
+    if (!profileTabViews) {
+      profileTabViews = new Map()
+      this.tabViews.set(profileId, profileTabViews)
+    }
+
+    const view = this.createTabView(profileId, paneId, tab)
+    profileTabViews.set(tab.id, view)
+    this.tabToPaneId.set(tab.id, paneId)
+
+    return view
+  }
+
+  removeTab(profileId: string, paneId: string, tabId: string): void {
+    const profileTabViews = this.tabViews.get(profileId)
+    if (!profileTabViews) return
+
+    const view = profileTabViews.get(tabId)
     if (!view) return
 
     view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
     this.win.contentView.removeChildView(view)
-    profileViews.delete(paneId)
+    profileTabViews.delete(tabId)
+    this.tabToPaneId.delete(tabId)
+
+    // If this was the active tab, the caller is responsible for updating activeTabId
+    // via setActiveTab before the next updateActiveBounds call
+  }
+
+  setActiveTab(profileId: string, paneId: string, tabId: string): void {
+    this.activeTabIds.set(paneId, tabId)
+
+    if (this.activeProfileId === profileId) {
+      this.updateActiveBounds()
+    }
+  }
+
+  moveTab(profileId: string, fromPaneId: string, tabId: string, toPaneId: string): void {
+    // Update the pane ownership mapping
+    this.tabToPaneId.set(tabId, toPaneId)
+
+    // If this tab was the active tab in fromPaneId, the caller should update
+    // activeTabId for fromPaneId via setActiveTab
+    if (this.activeProfileId === profileId) {
+      this.updateActiveBounds()
+    }
   }
 
   hideAllViews(): void {
     if (!this.activeProfileId) return
-    const views = this.paneViews.get(this.activeProfileId)
-    if (!views) return
-    for (const view of views.values()) {
+    const profileTabViews = this.tabViews.get(this.activeProfileId)
+    if (!profileTabViews) return
+    for (const view of profileTabViews.values()) {
       view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
     }
   }
@@ -225,43 +443,44 @@ export class ViewManager {
     this.updateActiveBounds()
   }
 
-  navigatePane(profileId: string, paneId: string, url: string): void {
-    const view = this.paneViews.get(profileId)?.get(paneId)
+  navigateTab(profileId: string, paneId: string, tabId: string, url: string): void {
+    const view = this.tabViews.get(profileId)?.get(tabId)
     if (!view) return
-    view.webContents.loadURL(url)
+    view.webContents.loadURL(url).catch(() => {})
   }
 
-  goBack(profileId: string, paneId: string): void {
-    const view = this.paneViews.get(profileId)?.get(paneId)
-    if (view && view.webContents.canGoBack()) {
+  goBack(profileId: string, paneId: string, tabId: string): void {
+    const view = this.tabViews.get(profileId)?.get(tabId)
+    if (view && view.webContents.navigationHistory.canGoBack()) {
       view.webContents.goBack()
     }
   }
 
-  goForward(profileId: string, paneId: string): void {
-    const view = this.paneViews.get(profileId)?.get(paneId)
-    if (view && view.webContents.canGoForward()) {
+  goForward(profileId: string, paneId: string, tabId: string): void {
+    const view = this.tabViews.get(profileId)?.get(tabId)
+    if (view && view.webContents.navigationHistory.canGoForward()) {
       view.webContents.goForward()
     }
   }
 
-  reloadPane(profileId: string, paneId: string): void {
-    const view = this.paneViews.get(profileId)?.get(paneId)
+  reloadTab(profileId: string, paneId: string, tabId: string): void {
+    const view = this.tabViews.get(profileId)?.get(tabId)
     if (view) {
       view.webContents.reload()
     }
   }
 
   async destroyProfile(profileId: string): Promise<void> {
-    const profileViews = this.paneViews.get(profileId)
-    if (!profileViews) return
+    const profileTabViews = this.tabViews.get(profileId)
+    if (!profileTabViews) return
 
-    for (const view of profileViews.values()) {
+    for (const [tabId, view] of profileTabViews) {
       view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
       this.win.contentView.removeChildView(view)
+      this.tabToPaneId.delete(tabId)
     }
-    profileViews.clear()
-    this.paneViews.delete(profileId)
+    profileTabViews.clear()
+    this.tabViews.delete(profileId)
 
     // Clear session data
     const partition = `persist:profile-${profileId}`
@@ -279,10 +498,18 @@ export class ViewManager {
     return this.activeProfileId
   }
 
-  getActivePaneView(): WebContentsView | undefined {
+  getActivePaneView(activePaneId?: string): WebContentsView | undefined {
     if (!this.activeProfileId) return undefined
-    const profileViews = this.paneViews.get(this.activeProfileId)
-    if (!profileViews) return undefined
-    return profileViews.values().next().value
+    const profileTabViews = this.tabViews.get(this.activeProfileId)
+    if (!profileTabViews) return undefined
+
+    // If a specific pane is given, return its active tab's view
+    if (activePaneId) {
+      const activeTabId = this.activeTabIds.get(activePaneId)
+      if (activeTabId) return profileTabViews.get(activeTabId)
+    }
+
+    // Fallback: return the first view found
+    return profileTabViews.values().next().value
   }
 }

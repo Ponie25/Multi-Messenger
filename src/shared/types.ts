@@ -1,6 +1,12 @@
-export interface Pane {
+export interface Tab {
   id: string
   url: string
+}
+
+export interface Pane {
+  id: string
+  tabs: Tab[]
+  activeTabId: string
 }
 
 export type SplitDirection = 'horizontal' | 'vertical'

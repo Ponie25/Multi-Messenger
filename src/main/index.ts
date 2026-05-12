@@ -1,7 +1,8 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, session as electronSession } from 'electron'
 import path from 'path'
 import { ProfileStore } from './store'
 import { ViewManager } from './view-manager'
+import { initAdBlocker, enableBlockingForAllProfiles, enableBlockingForSession } from './adblocker'
 import type { SplitNode } from '../shared/types'
 
 const { randomUUID } = require('crypto') as { randomUUID: () => string }
@@ -35,14 +36,17 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../../renderer/index.html'))
   }
 
+  // Increase max listeners — multiple pane views send events through the main webContents
+  mainWindow.webContents.setMaxListeners(30)
+
   viewManager = new ViewManager(mainWindow)
 
-  // Push navigation events to renderer
-  viewManager.setUrlChangedHandler((profileId, paneId, url) => {
-    mainWindow?.webContents.send('pane:urlChanged', { profileId, paneId, url })
+  // Push navigation events to renderer (now include tabId)
+  viewManager.setUrlChangedHandler((profileId, paneId, tabId, url) => {
+    mainWindow?.webContents.send('pane:urlChanged', { profileId, paneId, tabId, url })
   })
-  viewManager.setNavStateHandler((profileId, paneId, canGoBack, canGoForward) => {
-    mainWindow?.webContents.send('pane:navState', { profileId, paneId, canGoBack, canGoForward })
+  viewManager.setNavStateHandler((profileId, paneId, tabId, canGoBack, canGoForward) => {
+    mainWindow?.webContents.send('pane:navState', { profileId, paneId, tabId, canGoBack, canGoForward })
   })
   viewManager.setNotificationHandler((profileId, paneId, title, body, icon) => {
     mainWindow?.webContents.send('notification:received', { profileId, paneId, title, body, icon })
@@ -60,8 +64,10 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   createWindow()
+  registerIpcHandlers()
 
   const profiles = profileStore.getAll()
+
   for (const profile of profiles) {
     await viewManager!.createProfile(profile)
   }
@@ -69,7 +75,10 @@ app.whenReady().then(async () => {
     viewManager!.showProfile(profiles[0].id, profiles[0].splitTree)
   }
 
-  registerIpcHandlers()
+  // Initialize ad blocker in background (non-blocking)
+  initAdBlocker().then(() => {
+    enableBlockingForAllProfiles(profiles.map((p) => p.id))
+  }).catch(() => {})
 })
 
 app.on('window-all-closed', () => {
@@ -87,15 +96,22 @@ function registerIpcHandlers() {
     if (!viewManager) return null
     const profiles = profileStore.getAll()
     const paneId = randomUUID()
+    const tabId = randomUUID()
     const newProfile = {
       id: randomUUID(),
       name: `Profile ${profiles.length + 1}`,
       order: profiles.length,
-      panes: [{ id: paneId, url: '' }],
+      panes: [{ id: paneId, tabs: [{ id: tabId, url: '' }], activeTabId: tabId }],
       splitTree: { type: 'leaf' as const, paneId },
       activePaneId: paneId,
     }
     profileStore.add(newProfile)
+
+    // Enable ad blocking on the new profile's session
+    const partition = `persist:profile-${newProfile.id}`
+    const profileSession = electronSession.fromPartition(partition)
+    try { enableBlockingForSession(profileSession, partition) } catch {}
+
     await viewManager.createProfile(newProfile)
     viewManager.showProfile(newProfile.id)
     return newProfile
@@ -110,23 +126,13 @@ function registerIpcHandlers() {
 
   ipcMain.handle('profile:remove', async (_event, profileId: string) => {
     if (!viewManager || !mainWindow) return { success: false }
-    const result = await dialog.showMessageBox(mainWindow, {
-      type: 'warning',
-      buttons: ['Cancel', 'Remove'],
-      defaultId: 0,
-      cancelId: 0,
-      message: 'Remove this profile? This will clear all its data.',
-    })
-    if (result.response === 1) {
-      await viewManager.destroyProfile(profileId)
-      profileStore.remove(profileId)
-      const remaining = profileStore.getAll()
-      if (remaining.length > 0) {
-        viewManager.showProfile(remaining[0].id)
-      }
-      return { success: true, remaining }
+    await viewManager.destroyProfile(profileId)
+    profileStore.remove(profileId)
+    const remaining = profileStore.getAll()
+    if (remaining.length > 0) {
+      viewManager.showProfile(remaining[0].id)
     }
-    return { success: false }
+    return { success: true, remaining }
   })
 
   ipcMain.handle('profile:rename', (_event, profileId: string, name: string) => {
@@ -162,15 +168,16 @@ function registerIpcHandlers() {
   })
 
   // Pane handlers
-  ipcMain.handle('pane:navigate', (_event, profileId: string, paneId: string, url: string) => {
+  ipcMain.handle('pane:navigate', (_event, profileId: string, paneId: string, tabId: string, url: string) => {
     if (!viewManager) return
-    viewManager.navigatePane(profileId, paneId, url)
-    profileStore.updatePane(profileId, paneId, { url })
+    viewManager.navigateTab(profileId, paneId, tabId, url)
+    profileStore.updateTab(profileId, paneId, tabId, { url })
   })
 
   ipcMain.handle('pane:add', (_event, profileId: string, targetPaneId: string, direction: string) => {
     if (!viewManager) return null
-    const pane = { id: randomUUID(), url: '' }
+    const tabId = randomUUID()
+    const pane = { id: randomUUID(), tabs: [{ id: tabId, url: '' }], activeTabId: tabId }
     const added = profileStore.addPane(profileId, pane, targetPaneId, direction as any)
     if (!added) return null
     const profile = profileStore.getProfile(profileId)
@@ -212,16 +219,70 @@ function registerIpcHandlers() {
     profileStore.update(profileId, { activePaneId: paneId })
   })
 
-  ipcMain.handle('pane:goBack', (_event, profileId: string, paneId: string) => {
-    viewManager?.goBack(profileId, paneId)
+  ipcMain.handle('pane:goBack', (_event, profileId: string, paneId: string, tabId: string) => {
+    viewManager?.goBack(profileId, paneId, tabId)
   })
 
-  ipcMain.handle('pane:goForward', (_event, profileId: string, paneId: string) => {
-    viewManager?.goForward(profileId, paneId)
+  ipcMain.handle('pane:goForward', (_event, profileId: string, paneId: string, tabId: string) => {
+    viewManager?.goForward(profileId, paneId, tabId)
   })
 
-  ipcMain.handle('pane:reload', (_event, profileId: string, paneId: string) => {
-    viewManager?.reloadPane(profileId, paneId)
+  ipcMain.handle('pane:reload', (_event, profileId: string, paneId: string, tabId: string) => {
+    viewManager?.reloadTab(profileId, paneId, tabId)
+  })
+
+  // Tab handlers
+  ipcMain.handle('tab:add', (_event, profileId: string, paneId: string) => {
+    if (!viewManager) return null
+    const tab = profileStore.addTab(profileId, paneId)
+    if (!tab) return null
+    viewManager.addTab(profileId, paneId, tab)
+    viewManager.setActiveTab(profileId, paneId, tab.id)
+    return tab
+  })
+
+  ipcMain.handle('tab:remove', async (_event, profileId: string, paneId: string, tabId: string) => {
+    if (!viewManager) return { success: false }
+    const result = profileStore.removeTab(profileId, paneId, tabId)
+    viewManager.removeTab(profileId, paneId, tabId)
+    if (result.removedPane) {
+      const profile = profileStore.getProfile(profileId)
+      if (profile) {
+        viewManager.updateBoundsFromTree(profileId, profile.splitTree)
+      }
+    } else {
+      // Update active tab in view manager
+      const profile = profileStore.getProfile(profileId)
+      const pane = profile?.panes.find((p) => p.id === paneId)
+      if (pane) {
+        viewManager.setActiveTab(profileId, paneId, pane.activeTabId)
+      }
+    }
+    return { success: true, removedPane: result.removedPane }
+  })
+
+  ipcMain.handle('tab:setActive', (_event, profileId: string, paneId: string, tabId: string) => {
+    if (!viewManager) return
+    profileStore.setActiveTab(profileId, paneId, tabId)
+    viewManager.setActiveTab(profileId, paneId, tabId)
+  })
+
+  ipcMain.handle('tab:move', (_event, profileId: string, fromPaneId: string, tabId: string, toPaneId: string) => {
+    if (!viewManager) return { success: false }
+    const result = profileStore.moveTab(profileId, fromPaneId, tabId, toPaneId)
+    viewManager.moveTab(profileId, fromPaneId, tabId, toPaneId)
+    // Update active tabs
+    const profile = profileStore.getProfile(profileId)
+    if (profile) {
+      const toPane = profile.panes.find((p) => p.id === toPaneId)
+      if (toPane) viewManager.setActiveTab(profileId, toPaneId, toPane.activeTabId)
+      const fromPane = profile.panes.find((p) => p.id === fromPaneId)
+      if (fromPane) viewManager.setActiveTab(profileId, fromPaneId, fromPane.activeTabId)
+      if (result.removedPane) {
+        viewManager.updateBoundsFromTree(profileId, profile.splitTree)
+      }
+    }
+    return { success: true, removedPane: result.removedPane }
   })
 
   // Window controls

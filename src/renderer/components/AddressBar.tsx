@@ -14,6 +14,7 @@ function normalizeInput(input: string): string {
 
 interface AddressBarProps {
   paneId: string
+  tabId: string
   currentUrl: string
   isActive: boolean
   canGoBack: boolean
@@ -31,6 +32,7 @@ interface AddressBarProps {
 
 export function AddressBar({
   paneId,
+  tabId,
   currentUrl,
   isActive,
   canGoBack,

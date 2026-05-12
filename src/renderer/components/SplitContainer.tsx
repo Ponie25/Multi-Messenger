@@ -1,6 +1,7 @@
 import { useRef, useCallback } from 'react'
-import type { SplitNode, SplitDirection } from '../types'
+import type { SplitNode, SplitDirection, Pane } from '../types'
 import { AddressBar } from './AddressBar'
+import { TabBar } from './TabBar'
 import { ResizeHandle } from './ResizeHandle'
 import { usePaneDrop, usePaneDndOverlay } from './PaneDndContext'
 import { MAX_PANES_PER_PROFILE } from '../../shared/constants'
@@ -8,27 +9,32 @@ import { countLeaves } from '../../shared/split-tree'
 
 interface SplitContainerProps {
   node: SplitNode
-  paneUrls: Record<string, string>
-  paneNavState: Record<string, { canGoBack: boolean; canGoForward: boolean }>
-  paneLoading: Record<string, boolean>
+  panes: Pane[]
+  tabUrls: Record<string, string>
+  tabNavState: Record<string, { canGoBack: boolean; canGoForward: boolean }>
+  tabLoading: Record<string, boolean>
   activePaneId: string
   totalLeaves: number
-  onNavigate: (paneId: string, url: string) => void
+  onNavigate: (paneId: string, tabId: string, url: string) => void
   onSplit: (paneId: string, direction: SplitDirection) => void
   onClose: (paneId: string) => void
   onSetActivePane: (paneId: string) => void
-  onGoBack: (paneId: string) => void
-  onGoForward: (paneId: string) => void
-  onReload: (paneId: string) => void
+  onGoBack: (paneId: string, tabId: string) => void
+  onGoForward: (paneId: string, tabId: string) => void
+  onReload: (paneId: string, tabId: string) => void
   onResize: (path: number[], ratio: number) => void
+  onAddTab: (paneId: string) => void
+  onRemoveTab: (paneId: string, tabId: string) => void
+  onSetActiveTab: (paneId: string, tabId: string) => void
   path: number[]
 }
 
 export function SplitContainer({
   node,
-  paneUrls,
-  paneNavState,
-  paneLoading,
+  panes,
+  tabUrls,
+  tabNavState,
+  tabLoading,
   activePaneId,
   totalLeaves,
   onNavigate,
@@ -39,6 +45,9 @@ export function SplitContainer({
   onGoForward,
   onReload,
   onResize,
+  onAddTab,
+  onRemoveTab,
+  onSetActiveTab,
   path,
 }: SplitContainerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -49,19 +58,26 @@ export function SplitContainer({
 
   if (node.type === 'leaf') {
     const paneId = node.paneId
-    const navState = paneNavState[paneId] || { canGoBack: false, canGoForward: false }
-    const currentUrl = paneUrls[paneId] || ''
-    const isLoading = paneLoading[paneId] || false
+    const pane = panes.find((p) => p.id === paneId)
+    if (!pane) return null
+
+    const activeTabId = pane.activeTabId
+    const navState = tabNavState[activeTabId] || { canGoBack: false, canGoForward: false }
+    const currentUrl = tabUrls[activeTabId] || pane.tabs.find((t) => t.id === activeTabId)?.url || ''
+    const isLoading = tabLoading[activeTabId] || false
 
     return (
       <PaneLeaf
         paneId={paneId}
+        pane={pane}
         currentUrl={currentUrl}
         isActive={paneId === activePaneId}
         isLoading={isLoading}
         navState={navState}
         canSplit={totalLeaves < MAX_PANES_PER_PROFILE}
         canClose={totalLeaves > 1}
+        tabUrls={tabUrls}
+        tabLoading={tabLoading}
         onNavigate={onNavigate}
         onSplit={onSplit}
         onClose={onClose}
@@ -69,12 +85,16 @@ export function SplitContainer({
         onGoBack={onGoBack}
         onGoForward={onGoForward}
         onReload={onReload}
+        onAddTab={onAddTab}
+        onRemoveTab={onRemoveTab}
+        onSetActiveTab={onSetActiveTab}
       />
     )
   }
 
   // Branch node
   const { direction, ratio, children } = node
+
   const isHorizontal = direction === 'horizontal'
 
   return (
@@ -85,9 +105,10 @@ export function SplitContainer({
       <div style={{ flex: `${ratio} 1 0%` }} className="min-w-0 min-h-0 animate-[paneIn_200ms_ease-out]">
         <SplitContainer
           node={children[0]}
-          paneUrls={paneUrls}
-          paneNavState={paneNavState}
-          paneLoading={paneLoading}
+          panes={panes}
+          tabUrls={tabUrls}
+          tabNavState={tabNavState}
+          tabLoading={tabLoading}
           activePaneId={activePaneId}
           totalLeaves={totalLeaves}
           onNavigate={onNavigate}
@@ -98,6 +119,9 @@ export function SplitContainer({
           onGoForward={onGoForward}
           onReload={onReload}
           onResize={onResize}
+          onAddTab={onAddTab}
+          onRemoveTab={onRemoveTab}
+          onSetActiveTab={onSetActiveTab}
           path={[...path, 0]}
         />
       </div>
@@ -116,9 +140,10 @@ export function SplitContainer({
       <div style={{ flex: `${1 - ratio} 1 0%` }} className="min-w-0 min-h-0 animate-[paneIn_200ms_ease-out]">
         <SplitContainer
           node={children[1]}
-          paneUrls={paneUrls}
-          paneNavState={paneNavState}
-          paneLoading={paneLoading}
+          panes={panes}
+          tabUrls={tabUrls}
+          tabNavState={tabNavState}
+          tabLoading={tabLoading}
           activePaneId={activePaneId}
           totalLeaves={totalLeaves}
           onNavigate={onNavigate}
@@ -129,6 +154,9 @@ export function SplitContainer({
           onGoForward={onGoForward}
           onReload={onReload}
           onResize={onResize}
+          onAddTab={onAddTab}
+          onRemoveTab={onRemoveTab}
+          onSetActiveTab={onSetActiveTab}
           path={[...path, 1]}
         />
       </div>
@@ -139,29 +167,38 @@ export function SplitContainer({
 // Leaf pane with drop target for DnD swap
 interface PaneLeafProps {
   paneId: string
+  pane: Pane
   currentUrl: string
   isActive: boolean
   isLoading: boolean
   navState: { canGoBack: boolean; canGoForward: boolean }
   canSplit: boolean
   canClose: boolean
-  onNavigate: (paneId: string, url: string) => void
+  tabUrls: Record<string, string>
+  tabLoading: Record<string, boolean>
+  onNavigate: (paneId: string, tabId: string, url: string) => void
   onSplit: (paneId: string, direction: SplitDirection) => void
   onClose: (paneId: string) => void
   onSetActivePane: (paneId: string) => void
-  onGoBack: (paneId: string) => void
-  onGoForward: (paneId: string) => void
-  onReload: (paneId: string) => void
+  onGoBack: (paneId: string, tabId: string) => void
+  onGoForward: (paneId: string, tabId: string) => void
+  onReload: (paneId: string, tabId: string) => void
+  onAddTab: (paneId: string) => void
+  onRemoveTab: (paneId: string, tabId: string) => void
+  onSetActiveTab: (paneId: string, tabId: string) => void
 }
 
 function PaneLeaf({
   paneId,
+  pane,
   currentUrl,
   isActive,
   isLoading,
   navState,
   canSplit,
   canClose,
+  tabUrls,
+  tabLoading,
   onNavigate,
   onSplit,
   onClose,
@@ -169,25 +206,42 @@ function PaneLeaf({
   onGoBack,
   onGoForward,
   onReload,
+  onAddTab,
+  onRemoveTab,
+  onSetActiveTab,
 }: PaneLeafProps) {
   const { setNodeRef, isOver } = usePaneDrop(paneId)
-  const { activeId } = usePaneDndOverlay()
-  const showHighlight = isOver && activeId !== paneId
+  const { activeId, activeDragData } = usePaneDndOverlay()
+  const showHighlight = isOver && (
+    (activeDragData?.type === 'pane' && activeDragData.paneId !== paneId) ||
+    (activeDragData?.type === 'tab' && activeDragData.fromPaneId !== paneId)
+  )
 
   return (
     <div ref={setNodeRef} className="flex flex-col h-full w-full min-w-0 min-h-0 relative rounded-lg overflow-hidden border border-border bg-background">
+      <TabBar
+        paneId={paneId}
+        tabs={pane.tabs}
+        activeTabId={pane.activeTabId}
+        tabUrls={tabUrls}
+        tabLoading={tabLoading}
+        onSetActiveTab={(tabId) => onSetActiveTab(paneId, tabId)}
+        onAddTab={() => onAddTab(paneId)}
+        onRemoveTab={(tabId) => onRemoveTab(paneId, tabId)}
+      />
       <AddressBar
         paneId={paneId}
+        tabId={pane.activeTabId}
         currentUrl={currentUrl}
         isActive={isActive}
         canGoBack={navState.canGoBack}
         canGoForward={navState.canGoForward}
         canSplit={canSplit}
         canClose={canClose}
-        onNavigate={(url) => onNavigate(paneId, url)}
-        onGoBack={() => onGoBack(paneId)}
-        onGoForward={() => onGoForward(paneId)}
-        onReload={() => onReload(paneId)}
+        onNavigate={(url) => onNavigate(paneId, pane.activeTabId, url)}
+        onGoBack={() => onGoBack(paneId, pane.activeTabId)}
+        onGoForward={() => onGoForward(paneId, pane.activeTabId)}
+        onReload={() => onReload(paneId, pane.activeTabId)}
         onSplit={(direction) => onSplit(paneId, direction)}
         onClose={() => onClose(paneId)}
         onFocus={() => onSetActivePane(paneId)}

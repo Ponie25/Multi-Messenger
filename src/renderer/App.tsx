@@ -15,9 +15,10 @@ type ViewState = 'workspace' | 'notifications'
 export default function App() {
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null)
-  const [paneUrls, setPaneUrls] = useState<Record<string, string>>({})
-  const [paneNavState, setPaneNavState] = useState<Record<string, { canGoBack: boolean; canGoForward: boolean }>>({})
-  const [paneLoading, setPaneLoading] = useState<Record<string, boolean>>({})
+  // Keyed by tabId (not paneId) since each tab has its own URL/nav state
+  const [tabUrls, setTabUrls] = useState<Record<string, string>>({})
+  const [tabNavState, setTabNavState] = useState<Record<string, { canGoBack: boolean; canGoForward: boolean }>>({})
+  const [tabLoading, setTabLoading] = useState<Record<string, boolean>>({})
   const [viewState, setViewState] = useState<ViewState>('workspace')
 
   const { notifications, unreadCount, addNotification, markRead, markAllRead } = useNotifications()
@@ -32,16 +33,16 @@ export default function App() {
       }
     })
 
-    const unsubUrl = api.onPaneUrlChanged(({ paneId, url }) => {
-      setPaneUrls((prev) => ({ ...prev, [paneId]: url }))
+    const unsubUrl = api.onPaneUrlChanged(({ tabId, url }) => {
+      setTabUrls((prev) => ({ ...prev, [tabId]: url }))
     })
 
-    const unsubNav = api.onPaneNavState(({ paneId, canGoBack, canGoForward }) => {
-      setPaneNavState((prev) => ({ ...prev, [paneId]: { canGoBack, canGoForward } }))
+    const unsubNav = api.onPaneNavState(({ tabId, canGoBack, canGoForward }) => {
+      setTabNavState((prev) => ({ ...prev, [tabId]: { canGoBack, canGoForward } }))
     })
 
-    const unsubLoading = api.onPaneLoading(({ paneId, loading }) => {
-      setPaneLoading((prev) => ({ ...prev, [paneId]: loading }))
+    const unsubLoading = api.onPaneLoading(({ tabId, loading }) => {
+      setTabLoading((prev) => ({ ...prev, [tabId]: loading }))
     })
 
     const unsubSwitch = api.onProfileSwitch((profileId) => {
@@ -114,10 +115,10 @@ export default function App() {
   // Pane handlers
   const activeProfile = profiles.find((p) => p.id === activeProfileId) || null
 
-  const handleNavigate = useCallback(async (paneId: string, url: string) => {
+  const handleNavigate = useCallback(async (paneId: string, tabId: string, url: string) => {
     if (!activeProfileId) return
-    await window.electronAPI.navigatePane(activeProfileId, paneId, url)
-    setPaneUrls((prev) => ({ ...prev, [paneId]: url }))
+    await window.electronAPI.navigatePane(activeProfileId, paneId, tabId, url)
+    setTabUrls((prev) => ({ ...prev, [tabId]: url }))
   }, [activeProfileId])
 
   const handleSplit = useCallback(async (paneId: string, direction: SplitDirection) => {
@@ -149,19 +150,63 @@ export default function App() {
     )
   }, [activeProfileId])
 
-  const handleGoBack = useCallback((paneId: string) => {
+  const handleGoBack = useCallback((paneId: string, tabId: string) => {
     if (!activeProfileId) return
-    window.electronAPI.goBack(activeProfileId, paneId)
+    window.electronAPI.goBack(activeProfileId, paneId, tabId)
   }, [activeProfileId])
 
-  const handleGoForward = useCallback((paneId: string) => {
+  const handleGoForward = useCallback((paneId: string, tabId: string) => {
     if (!activeProfileId) return
-    window.electronAPI.goForward(activeProfileId, paneId)
+    window.electronAPI.goForward(activeProfileId, paneId, tabId)
   }, [activeProfileId])
 
-  const handleReload = useCallback((paneId: string) => {
+  const handleReload = useCallback((paneId: string, tabId: string) => {
     if (!activeProfileId) return
-    window.electronAPI.reloadPane(activeProfileId, paneId)
+    window.electronAPI.reloadPane(activeProfileId, paneId, tabId)
+  }, [activeProfileId])
+
+  // Tab handlers
+  const handleAddTab = useCallback(async (paneId: string) => {
+    if (!activeProfileId) return
+    const tab = await window.electronAPI.addTab(activeProfileId, paneId)
+    if (tab) {
+      const updated = await window.electronAPI.getProfiles()
+      setProfiles(updated)
+    }
+  }, [activeProfileId])
+
+  const handleRemoveTab = useCallback(async (paneId: string, tabId: string) => {
+    if (!activeProfileId) return
+    const result = await window.electronAPI.removeTab(activeProfileId, paneId, tabId)
+    if (result.success) {
+      const updated = await window.electronAPI.getProfiles()
+      setProfiles(updated)
+    }
+  }, [activeProfileId])
+
+  const handleSetActiveTab = useCallback(async (paneId: string, tabId: string) => {
+    if (!activeProfileId) return
+    await window.electronAPI.setActiveTab(activeProfileId, paneId, tabId)
+    setProfiles((prev) =>
+      prev.map((p) => {
+        if (p.id !== activeProfileId) return p
+        return {
+          ...p,
+          panes: p.panes.map((pane) =>
+            pane.id === paneId ? { ...pane, activeTabId: tabId } : pane
+          ),
+        }
+      })
+    )
+  }, [activeProfileId])
+
+  const handleMoveTab = useCallback(async (fromPaneId: string, tabId: string, toPaneId: string) => {
+    if (!activeProfileId) return
+    const result = await window.electronAPI.moveTab(activeProfileId, fromPaneId, tabId, toPaneId)
+    if (result.success) {
+      const updated = await window.electronAPI.getProfiles()
+      setProfiles(updated)
+    }
   }, [activeProfileId])
 
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -229,10 +274,17 @@ export default function App() {
           handleSplit(activeProfile.activePaneId, 'horizontal')
         }
       }
+      // Ctrl+T to add a new tab in the active pane
+      if ((e.metaKey || e.ctrlKey) && e.key === 't') {
+        e.preventDefault()
+        if (activeProfile) {
+          handleAddTab(activeProfile.activePaneId)
+        }
+      }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [activeProfile, handleSplit])
+  }, [activeProfile, handleSplit, handleAddTab])
 
   // Hide/show WebContentsViews based on view state
   useEffect(() => {
@@ -250,6 +302,12 @@ export default function App() {
           profileName={activeProfile?.name || 'MultiMessenger'}
           notifications={notifications}
           onNotificationClick={handleNotificationClick}
+          onRenameProfile={(name) => {
+            if (activeProfileId) handleRenameProfile(activeProfileId, name)
+          }}
+          onRemoveProfile={() => {
+            if (activeProfileId) handleRemoveProfile(activeProfileId)
+          }}
         />
         <div className="flex flex-1 min-h-0">
           <Sidebar
@@ -258,8 +316,6 @@ export default function App() {
             unreadCount={unreadCount}
             onAddProfile={handleAddProfile}
             onSwitchProfile={handleSwitchProfile}
-            onRemoveProfile={handleRemoveProfile}
-            onRenameProfile={handleRenameProfile}
             onReorder={handleReorder}
             onBellClick={handleBellClick}
           />
@@ -271,12 +327,12 @@ export default function App() {
                 onMarkAllRead={markAllRead}
               />
             ) : activeProfile ? (
-              <PaneDndProvider onSwap={handleSwapPanes}>
+              <PaneDndProvider onSwap={handleSwapPanes} onMoveTab={handleMoveTab}>
                 <ContentArea
                   profile={activeProfile}
-                  paneUrls={paneUrls}
-                  paneNavState={paneNavState}
-                  paneLoading={paneLoading}
+                  tabUrls={tabUrls}
+                  tabNavState={tabNavState}
+                  tabLoading={tabLoading}
                   onNavigate={handleNavigate}
                   onSplit={handleSplit}
                   onRemovePane={handleRemovePane}
@@ -285,6 +341,9 @@ export default function App() {
                   onGoForward={handleGoForward}
                   onReload={handleReload}
                   onResize={handleResize}
+                  onAddTab={handleAddTab}
+                  onRemoveTab={handleRemoveTab}
+                  onSetActiveTab={handleSetActiveTab}
                 />
               </PaneDndProvider>
             ) : (

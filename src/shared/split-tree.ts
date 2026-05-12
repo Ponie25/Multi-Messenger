@@ -1,5 +1,5 @@
 import { SplitNode, SplitDirection } from './types'
-import { MAX_PANES_PER_PROFILE, ADDRESS_BAR_HEIGHT, PANE_GAP } from './constants'
+import { MAX_PANES_PER_PROFILE, ADDRESS_BAR_HEIGHT, TAB_BAR_HEIGHT, PANE_GAP } from './constants'
 
 export interface Rect {
   x: number
@@ -123,14 +123,15 @@ export function calculateBounds(node: SplitNode, rect: Rect): Map<string, Rect> 
 
 function calculateBoundsInner(node: SplitNode, rect: Rect, result: Map<string, Rect>): void {
   if (node.type === 'leaf') {
-    // Pane container: rounded-lg (8px) with 1px border on all sides + 40px address bar inside
+    // Pane container: rounded-lg (8px) with 1px border on all sides + 40px address bar + 32px tab bar inside
     // WebContentsView sits inside with small padding for visual breathing room
     const pad = 4
+    const chromeHeight = ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT
     result.set(node.paneId, {
       x: rect.x + pad,
-      y: rect.y + pad + ADDRESS_BAR_HEIGHT,
+      y: rect.y + pad + chromeHeight,
       width: rect.width - pad * 2,
-      height: rect.height - pad * 2 - ADDRESS_BAR_HEIGHT,
+      height: rect.height - pad * 2 - chromeHeight,
     })
     return
   }

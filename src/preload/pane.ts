@@ -1,41 +1,15 @@
 // Preload for pane WebContentsViews
-// Intercepts Web Notification API and forwards to main process
+// Listens for notification messages from the page's main world (injected via executeJavaScript)
+// and forwards them to the main process via IPC.
 import { ipcRenderer } from 'electron'
 
-// Override Notification constructor to intercept and forward
-const OriginalNotification = window.Notification
-
-class InterceptedNotification extends OriginalNotification {
-  constructor(title: string, options?: NotificationOptions) {
-    super(title, options)
+// Listen for postMessage from the injected notification override in the page's main world
+window.addEventListener('message', (event) => {
+  if (event.data && event.data.type === '__electron_notification__') {
     ipcRenderer.send('pane:notification', {
-      title,
-      body: options?.body || '',
-      icon: options?.icon || undefined,
+      title: event.data.title,
+      body: event.data.body,
+      icon: event.data.icon || undefined,
     })
   }
-}
-
-// Preserve static properties
-Object.defineProperty(InterceptedNotification, 'permission', {
-  get: () => OriginalNotification.permission,
 })
-InterceptedNotification.requestPermission = OriginalNotification.requestPermission.bind(OriginalNotification)
-
-;(window as any).Notification = InterceptedNotification
-
-// Override ServiceWorkerRegistration.showNotification
-if ('serviceWorker' in navigator) {
-  const originalShowNotification = ServiceWorkerRegistration.prototype.showNotification
-  ServiceWorkerRegistration.prototype.showNotification = function (
-    title: string,
-    options?: NotificationOptions
-  ): Promise<void> {
-    ipcRenderer.send('pane:notification', {
-      title,
-      body: options?.body || '',
-      icon: options?.icon || undefined,
-    })
-    return originalShowNotification.call(this, title, options)
-  }
-}
