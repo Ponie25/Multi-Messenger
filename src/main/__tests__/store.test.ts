@@ -1,4 +1,5 @@
 import { ProfileStore, Profile, Pane } from '../store'
+import type { SplitNode } from '../../shared/types'
 
 let sharedData: { profiles: Profile[] } = { profiles: [] }
 
@@ -25,6 +26,7 @@ function makeProfile(overrides: Partial<Profile> = {}): Profile {
     name: 'Test Profile',
     order: 0,
     panes: [{ id: paneId, url: '' }],
+    splitTree: { type: 'leaf', paneId } as SplitNode,
     activePaneId: paneId,
     ...overrides,
   }
@@ -82,22 +84,31 @@ describe('ProfileStore', () => {
     it('adds a pane to a profile', () => {
       store.add(makeProfile({ id: 'p1' }))
       const pane: Pane = { id: 'new-pane', url: '' }
-      const result = store.addPane('p1', pane)
+      const existingPaneId = store.getProfile('p1')!.panes[0].id
+      const result = store.addPane('p1', pane, existingPaneId, 'horizontal')
       expect(result).toEqual(pane)
       const profile = store.getProfile('p1')!
       expect(profile.panes).toHaveLength(2)
       expect(profile.activePaneId).toBe('new-pane')
     })
 
-    it('enforces max 3 panes', () => {
+    it('enforces max 4 panes', () => {
       const profile = makeProfile({ id: 'p1' })
       profile.panes = [
         { id: 'pane1', url: '' },
         { id: 'pane2', url: '' },
         { id: 'pane3', url: '' },
+        { id: 'pane4', url: '' },
       ]
+      profile.splitTree = {
+        type: 'branch', direction: 'horizontal', ratio: 0.5,
+        children: [
+          { type: 'branch', direction: 'vertical', ratio: 0.5, children: [{ type: 'leaf', paneId: 'pane1' }, { type: 'leaf', paneId: 'pane2' }] },
+          { type: 'branch', direction: 'vertical', ratio: 0.5, children: [{ type: 'leaf', paneId: 'pane3' }, { type: 'leaf', paneId: 'pane4' }] },
+        ],
+      }
       store.add(profile)
-      const result = store.addPane('p1', { id: 'pane4', url: '' })
+      const result = store.addPane('p1', { id: 'pane5', url: '' }, 'pane1', 'horizontal')
       expect(result).toBeNull()
     })
   })
@@ -106,6 +117,10 @@ describe('ProfileStore', () => {
     it('removes a pane', () => {
       const profile = makeProfile({ id: 'p1' })
       profile.panes = [{ id: 'pane1', url: '' }, { id: 'pane2', url: '' }]
+      profile.splitTree = {
+        type: 'branch', direction: 'horizontal', ratio: 0.5,
+        children: [{ type: 'leaf', paneId: 'pane1' }, { type: 'leaf', paneId: 'pane2' }],
+      }
       profile.activePaneId = 'pane1'
       store.add(profile)
       store.removePane('p1', 'pane1')

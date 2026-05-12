@@ -16,7 +16,7 @@ import {
   arrayMove,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { Sun, Moon, Plus } from 'lucide-react'
+import { Sun, Moon, Plus, Bell } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
 import { Button } from './ui/button'
 import { useTheme } from './ThemeProvider'
@@ -25,11 +25,13 @@ import type { Profile } from '../types'
 interface SidebarProps {
   profiles: Profile[]
   activeProfileId: string | null
+  unreadCount: number
   onAddProfile: () => void
   onSwitchProfile: (profileId: string) => void
   onRemoveProfile: (profileId: string) => void
   onRenameProfile: (profileId: string, name: string) => void
   onReorder: (orderedIds: string[]) => void
+  onBellClick: () => void
 }
 
 interface SortableProfileItemProps {
@@ -62,20 +64,7 @@ function SortableProfileItem({
   }
 
   return (
-    <div ref={setNodeRef} style={style} className="flex justify-center relative group">
-      <div
-        {...attributes}
-        {...listeners}
-        className="absolute -left-1 top-1/2 -translate-y-1/2 w-3 h-8 flex items-center justify-center cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-40 transition-opacity"
-        aria-label={`Drag to reorder ${profile.name}`}
-        title="Drag to reorder"
-      >
-        <svg viewBox="0 0 6 14" className="w-2 h-4 fill-current text-muted-foreground" aria-hidden="true">
-          <circle cx="2" cy="2" r="1.5" />
-          <circle cx="2" cy="7" r="1.5" />
-          <circle cx="2" cy="12" r="1.5" />
-        </svg>
-      </div>
+    <div ref={setNodeRef} style={style} className="flex justify-center">
       {isRenaming ? (
         <RenameInput
           defaultValue={profile.name}
@@ -83,12 +72,14 @@ function SortableProfileItem({
           onCancel={onRenameCancel}
         />
       ) : (
-        <ProfileAvatar
-          name={profile.name}
-          isActive={isActive}
-          onClick={onSwitch}
-          onContextMenu={onContextMenu}
-        />
+        <div {...attributes} {...listeners}>
+          <ProfileAvatar
+            name={profile.name}
+            isActive={isActive}
+            onClick={onSwitch}
+            onContextMenu={onContextMenu}
+          />
+        </div>
       )}
     </div>
   )
@@ -123,11 +114,13 @@ function RenameInput({
 export function Sidebar({
   profiles,
   activeProfileId,
+  unreadCount,
   onAddProfile,
   onSwitchProfile,
   onRemoveProfile,
   onRenameProfile,
   onReorder,
+  onBellClick,
 }: SidebarProps) {
   const { resolvedTheme, setTheme } = useTheme()
   const [renamingId, setRenamingId] = useState<string | null>(null)
@@ -164,7 +157,7 @@ export function Sidebar({
 
   return (
     <nav
-      className="flex flex-col items-center py-3 gap-3 bg-card border-r border-border"
+      className="flex flex-col items-center py-3 gap-3 bg-background border-r border-border"
       style={{ width: 72, minWidth: 72, maxWidth: 72 }}
       aria-label="Profile switcher"
     >
@@ -193,6 +186,21 @@ export function Sidebar({
       <Button
         variant="ghost"
         size="icon"
+        onClick={onBellClick}
+        className="w-10 h-10 rounded-full text-muted-foreground hover:text-foreground relative"
+        aria-label="Notifications"
+      >
+        <Bell className="h-5 w-5" />
+        {unreadCount > 0 && (
+          <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold px-1">
+            {unreadCount > 99 ? '99+' : unreadCount}
+          </span>
+        )}
+      </Button>
+
+      <Button
+        variant="ghost"
+        size="icon"
         onClick={() => setTheme(isDark ? 'light' : 'dark')}
         className="w-10 h-10 rounded-full text-muted-foreground hover:text-foreground"
         aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
@@ -204,11 +212,11 @@ export function Sidebar({
         variant="ghost"
         size="icon"
         onClick={onAddProfile}
-        className="w-12 h-12 rounded-full text-muted-foreground hover:text-foreground hover:bg-accent"
+        className="w-10 h-10 rounded-full text-muted-foreground hover:text-foreground hover:bg-accent"
         aria-label="Add profile"
         title="Add profile"
       >
-        <Plus className="h-6 w-6" />
+        <Plus className="h-5 w-5" />
       </Button>
     </nav>
   )

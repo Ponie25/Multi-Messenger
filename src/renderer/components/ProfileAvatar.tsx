@@ -18,6 +18,10 @@ function getInitials(name: string): string {
     .slice(0, 2)
 }
 
+function truncateName(name: string, max: number = 6): string {
+  return name.length > max ? name.slice(0, max) + '…' : name
+}
+
 export function ProfileAvatar({
   name,
   isActive,
@@ -29,20 +33,23 @@ export function ProfileAvatar({
       onClick={onClick}
       onContextMenu={onContextMenu}
       className={cn(
-        'relative w-12 h-12 rounded-full flex items-center justify-center transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        isActive
-          ? 'ring-2 ring-primary ring-offset-2 ring-offset-background'
-          : 'hover:ring-2 hover:ring-muted-foreground/50 hover:ring-offset-2 hover:ring-offset-background'
+        'relative flex flex-col items-center gap-1 transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-lg p-1',
       )}
       aria-label={name}
       aria-current={isActive ? 'true' : undefined}
       title={name}
     >
-      <Avatar className="w-full h-full">
-        <AvatarFallback className="bg-gradient-to-br from-blue-500 to-purple-600 text-white text-sm font-semibold select-none">
+      <Avatar className={cn(
+        'w-9 h-9',
+        isActive && 'ring-2 ring-primary ring-offset-1 ring-offset-background'
+      )}>
+        <AvatarFallback className="bg-muted text-foreground text-xs font-medium select-none">
           {getInitials(name) || '?'}
         </AvatarFallback>
       </Avatar>
+      <span className="text-[10px] text-muted-foreground leading-tight max-w-[56px] truncate">
+        {truncateName(name)}
+      </span>
     </button>
   )
 }

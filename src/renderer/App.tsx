@@ -1,22 +1,26 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { ThemeProvider } from './components/ThemeProvider'
 import { Sidebar } from './components/Sidebar'
+import { Toolbar } from './components/Toolbar'
 import { ContentArea } from './components/ContentArea'
-import { RightSidebar, RIGHT_SIDEBAR_COLLAPSED_WIDTH, RIGHT_SIDEBAR_EXPANDED_WIDTH } from './components/RightSidebar'
-import { QuickTextPanel } from './components/QuickTextPanel'
-import type { Profile } from './types'
+import { NotificationPage } from './components/NotificationPage'
+import { PaneDndProvider } from './components/PaneDndContext'
+import { useNotifications } from './hooks/useNotifications'
+import { updateRatioByPath } from '../shared/split-tree'
+import type { Profile, SplitNode, SplitDirection, NotificationItem } from './types'
 import './index.css'
+
+type ViewState = 'workspace' | 'notifications'
 
 export default function App() {
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null)
   const [paneUrls, setPaneUrls] = useState<Record<string, string>>({})
   const [paneNavState, setPaneNavState] = useState<Record<string, { canGoBack: boolean; canGoForward: boolean }>>({})
-  const [rightSidebarOpen, setRightSidebarOpen] = useState(false)
+  const [paneLoading, setPaneLoading] = useState<Record<string, boolean>>({})
+  const [viewState, setViewState] = useState<ViewState>('workspace')
 
-  useEffect(() => {
-    window.electronAPI.resizeSidebar({ rightSidebarWidth: RIGHT_SIDEBAR_COLLAPSED_WIDTH })
-  }, [])
+  const { notifications, unreadCount, addNotification, markRead, markAllRead } = useNotifications()
 
   useEffect(() => {
     const api = window.electronAPI
@@ -36,29 +40,50 @@ export default function App() {
       setPaneNavState((prev) => ({ ...prev, [paneId]: { canGoBack, canGoForward } }))
     })
 
+    const unsubLoading = api.onPaneLoading(({ paneId, loading }) => {
+      setPaneLoading((prev) => ({ ...prev, [paneId]: loading }))
+    })
+
     const unsubSwitch = api.onProfileSwitch((profileId) => {
       setActiveProfileId(profileId)
+    })
+
+    const unsubNotification = api.onNotification(({ profileId, paneId, title, body, icon }) => {
+      addNotification({
+        id: crypto.randomUUID(),
+        profileId,
+        paneId,
+        title,
+        body,
+        icon,
+        timestamp: Date.now(),
+        read: false,
+      })
     })
 
     return () => {
       unsubUrl()
       unsubNav()
+      unsubLoading()
       unsubSwitch()
+      unsubNotification()
     }
-  }, [])
+  }, [addNotification])
 
   const handleAddProfile = useCallback(async () => {
     const newProfile = await window.electronAPI.addProfile()
     if (newProfile) {
       setProfiles((prev) => [...prev, newProfile])
       setActiveProfileId(newProfile.id)
+      if (viewState === 'notifications') setViewState('workspace')
     }
-  }, [])
+  }, [viewState])
 
   const handleSwitchProfile = useCallback(async (profileId: string) => {
     await window.electronAPI.switchProfile(profileId)
     setActiveProfileId(profileId)
-  }, [])
+    if (viewState === 'notifications') setViewState('workspace')
+  }, [viewState])
 
   const handleRemoveProfile = useCallback(async (profileId: string) => {
     const result = await window.electronAPI.removeProfile(profileId)
@@ -95,17 +120,13 @@ export default function App() {
     setPaneUrls((prev) => ({ ...prev, [paneId]: url }))
   }, [activeProfileId])
 
-  const handleAddPane = useCallback(async () => {
+  const handleSplit = useCallback(async (paneId: string, direction: SplitDirection) => {
     if (!activeProfileId) return
-    const pane = await window.electronAPI.addPane(activeProfileId)
+    const pane = await window.electronAPI.addPane(activeProfileId, paneId, direction)
     if (pane) {
-      setProfiles((prev) =>
-        prev.map((p) =>
-          p.id === activeProfileId
-            ? { ...p, panes: [...p.panes, pane], activePaneId: pane.id }
-            : p
-        )
-      )
+      // Refresh profile from store
+      const updated = await window.electronAPI.getProfiles()
+      setProfiles(updated)
     }
   }, [activeProfileId])
 
@@ -113,14 +134,8 @@ export default function App() {
     if (!activeProfileId) return
     const result = await window.electronAPI.removePane(activeProfileId, paneId)
     if (result.success) {
-      setProfiles((prev) =>
-        prev.map((p) => {
-          if (p.id !== activeProfileId) return p
-          const panes = p.panes.filter((pn) => pn.id !== paneId)
-          const activePaneId = p.activePaneId === paneId ? panes[0]?.id : p.activePaneId
-          return { ...p, panes, activePaneId }
-        })
-      )
+      const updated = await window.electronAPI.getProfiles()
+      setProfiles(updated)
     }
   }, [activeProfileId])
 
@@ -144,6 +159,61 @@ export default function App() {
     window.electronAPI.goForward(activeProfileId, paneId)
   }, [activeProfileId])
 
+  const handleReload = useCallback((paneId: string) => {
+    if (!activeProfileId) return
+    window.electronAPI.reloadPane(activeProfileId, paneId)
+  }, [activeProfileId])
+
+  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleResize = useCallback((path: number[], ratio: number) => {
+    if (!activeProfileId) return
+    // Optimistic local update — instant, no IPC
+    setProfiles((prev) =>
+      prev.map((p) => {
+        if (p.id !== activeProfileId) return p
+        return { ...p, splitTree: updateRatioByPath(p.splitTree, path, ratio) }
+      })
+    )
+    // Debounce IPC to main process (repositions WebContentsViews)
+    if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current)
+    resizeTimerRef.current = setTimeout(() => {
+      window.electronAPI.updateSplitRatio(activeProfileId, path, ratio)
+    }, 32)
+  }, [activeProfileId])
+
+  const handleSwapPanes = useCallback(async (paneIdA: string, paneIdB: string) => {
+    if (!activeProfileId) return
+    const result = await window.electronAPI.swapPanes(activeProfileId, paneIdA, paneIdB)
+    if (result.success) {
+      const updated = await window.electronAPI.getProfiles()
+      setProfiles(updated)
+    }
+  }, [activeProfileId])
+
+  // View state handlers
+  const handleBellClick = useCallback(() => {
+    if (viewState === 'notifications') {
+      setViewState('workspace')
+    } else {
+      setViewState('notifications')
+    }
+  }, [viewState])
+
+  const handleNotificationClick = useCallback((notification: NotificationItem) => {
+    markRead(notification.id)
+    // Check if the source pane still exists
+    const sourceProfile = profiles.find((p) => p.id === notification.profileId)
+    const paneExists = sourceProfile?.panes.some((p) => p.id === notification.paneId)
+    if (!paneExists) {
+      // Toast: "This tab has been closed" — for now just stay on notification page
+      return
+    }
+    // Switch to source profile and close notification page
+    handleSwitchProfile(notification.profileId)
+    setViewState('workspace')
+  }, [markRead, profiles, handleSwitchProfile])
+
   // Keyboard shortcut: Cmd/Ctrl+L to focus address bar
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -152,68 +222,81 @@ export default function App() {
         const input = document.querySelector<HTMLInputElement>('.address-bar-input:focus, input[type="text"]')
         input?.focus()
       }
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [])
-
-  const handleToggleRightSidebar = useCallback(() => {
-    const next = !rightSidebarOpen
-    setRightSidebarOpen(next)
-    window.electronAPI.resizeSidebar({
-      rightSidebarWidth: next ? RIGHT_SIDEBAR_EXPANDED_WIDTH : RIGHT_SIDEBAR_COLLAPSED_WIDTH,
-    })
-  }, [rightSidebarOpen])
-
-  // Cmd/Ctrl+B to toggle right sidebar
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
+      // Ctrl+Shift+N to split active pane
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'N') {
         e.preventDefault()
-        handleToggleRightSidebar()
+        if (activeProfile) {
+          handleSplit(activeProfile.activePaneId, 'horizontal')
+        }
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [handleToggleRightSidebar])
+  }, [activeProfile, handleSplit])
+
+  // Hide/show WebContentsViews based on view state
+  useEffect(() => {
+    if (viewState === 'notifications') {
+      window.electronAPI.hideAllViews()
+    } else if (activeProfileId) {
+      window.electronAPI.showProfileViews(activeProfileId)
+    }
+  }, [viewState, activeProfileId])
 
   return (
     <ThemeProvider>
-      <div className="flex h-screen w-screen overflow-hidden bg-background">
-        <Sidebar
-          profiles={profiles}
-          activeProfileId={activeProfileId}
-          onAddProfile={handleAddProfile}
-          onSwitchProfile={handleSwitchProfile}
-          onRemoveProfile={handleRemoveProfile}
-          onRenameProfile={handleRenameProfile}
-          onReorder={handleReorder}
+      <div className="flex flex-col h-screen w-screen overflow-hidden bg-background">
+        <Toolbar
+          profileName={activeProfile?.name || 'MultiMessenger'}
+          notifications={notifications}
+          onNotificationClick={handleNotificationClick}
         />
-        <div className="flex-1 relative">
-          {activeProfile ? (
-            <ContentArea
-              profile={activeProfile}
-              paneUrls={paneUrls}
-              paneNavState={paneNavState}
-              onNavigate={handleNavigate}
-              onAddPane={handleAddPane}
-              onRemovePane={handleRemovePane}
-              onSetActivePane={handleSetActivePane}
-              onGoBack={handleGoBack}
-              onGoForward={handleGoForward}
-            />
-          ) : (
-            <div className="flex h-full items-center justify-center text-muted-foreground">
-              <div className="text-center">
-                <p className="text-lg mb-2">No profiles yet</p>
-                <p className="text-sm">Click + to add a profile</p>
+        <div className="flex flex-1 min-h-0">
+          <Sidebar
+            profiles={profiles}
+            activeProfileId={activeProfileId}
+            unreadCount={unreadCount}
+            onAddProfile={handleAddProfile}
+            onSwitchProfile={handleSwitchProfile}
+            onRemoveProfile={handleRemoveProfile}
+            onRenameProfile={handleRenameProfile}
+            onReorder={handleReorder}
+            onBellClick={handleBellClick}
+          />
+          <div className="flex-1 relative min-w-0 bg-muted/30">
+            {viewState === 'notifications' ? (
+              <NotificationPage
+                notifications={notifications}
+                onNotificationClick={handleNotificationClick}
+                onMarkAllRead={markAllRead}
+              />
+            ) : activeProfile ? (
+              <PaneDndProvider onSwap={handleSwapPanes}>
+                <ContentArea
+                  profile={activeProfile}
+                  paneUrls={paneUrls}
+                  paneNavState={paneNavState}
+                  paneLoading={paneLoading}
+                  onNavigate={handleNavigate}
+                  onSplit={handleSplit}
+                  onRemovePane={handleRemovePane}
+                  onSetActivePane={handleSetActivePane}
+                  onGoBack={handleGoBack}
+                  onGoForward={handleGoForward}
+                  onReload={handleReload}
+                  onResize={handleResize}
+                />
+              </PaneDndProvider>
+            ) : (
+              <div className="flex h-full items-center justify-center text-muted-foreground">
+                <div className="text-center">
+                  <p className="text-lg mb-2">No profiles yet</p>
+                  <p className="text-sm">Click + to add a profile</p>
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
-        <RightSidebar isOpen={rightSidebarOpen} onToggle={handleToggleRightSidebar}>
-          <QuickTextPanel />
-        </RightSidebar>
       </div>
     </ThemeProvider>
   )

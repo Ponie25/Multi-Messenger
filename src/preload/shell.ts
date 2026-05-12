@@ -13,24 +13,34 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Panes
   navigatePane: (profileId: string, paneId: string, url: string) =>
     ipcRenderer.invoke('pane:navigate', profileId, paneId, url),
-  addPane: (profileId: string) => ipcRenderer.invoke('pane:add', profileId),
+  addPane: (profileId: string, targetPaneId: string, direction: string) =>
+    ipcRenderer.invoke('pane:add', profileId, targetPaneId, direction),
   removePane: (profileId: string, paneId: string) => ipcRenderer.invoke('pane:remove', profileId, paneId),
   setActivePane: (profileId: string, paneId: string) => ipcRenderer.invoke('pane:setActive', profileId, paneId),
   goBack: (profileId: string, paneId: string) => ipcRenderer.invoke('pane:goBack', profileId, paneId),
   goForward: (profileId: string, paneId: string) => ipcRenderer.invoke('pane:goForward', profileId, paneId),
+  reloadPane: (profileId: string, paneId: string) => ipcRenderer.invoke('pane:reload', profileId, paneId),
+  swapPanes: (profileId: string, paneIdA: string, paneIdB: string) =>
+    ipcRenderer.invoke('pane:swap', profileId, paneIdA, paneIdB),
+  updateSplitRatio: (profileId: string, path: number[], ratio: number) =>
+    ipcRenderer.invoke('pane:updateRatio', profileId, path, ratio),
 
-  // Sidebar
-  resizeSidebar: (data: { rightSidebarWidth: number }) => {
-    ipcRenderer.send('sidebar:resize', data)
+  // Window controls
+  windowMinimize: () => ipcRenderer.send('window:minimize'),
+  windowMaximize: () => ipcRenderer.send('window:maximize'),
+  windowClose: () => ipcRenderer.send('window:close'),
+  windowIsMaximized: () => ipcRenderer.invoke('window:isMaximized'),
+
+  // View management
+  hideAllViews: () => ipcRenderer.send('view:hideAll'),
+  showProfileViews: (profileId: string) => ipcRenderer.send('view:showProfile', profileId),
+
+  // Notifications
+  onNotification: (callback: (data: { profileId: string; paneId: string; title: string; body: string; icon?: string }) => void) => {
+    const handler = (_event: any, data: any) => callback(data)
+    ipcRenderer.on('notification:received', handler)
+    return () => ipcRenderer.removeListener('notification:received', handler)
   },
-
-  // Quick Text
-  quickTextGetAll: () => ipcRenderer.invoke('quicktext:getAll'),
-  quickTextAdd: (label: string, text: string) => ipcRenderer.invoke('quicktext:add', label, text),
-  quickTextUpdate: (id: string, data: Partial<{ label: string; text: string }>) =>
-    ipcRenderer.invoke('quicktext:update', id, data),
-  quickTextRemove: (id: string) => ipcRenderer.invoke('quicktext:remove', id),
-  quickTextInject: (text: string) => ipcRenderer.invoke('quicktext:inject', text),
 
   // Events
   onPaneUrlChanged: (callback: (data: { profileId: string; paneId: string; url: string }) => void) => {
@@ -42,6 +52,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_event: any, data: any) => callback(data)
     ipcRenderer.on('pane:navState', handler)
     return () => ipcRenderer.removeListener('pane:navState', handler)
+  },
+  onPaneLoading: (callback: (data: { profileId: string; paneId: string; loading: boolean }) => void) => {
+    const handler = (_event: any, data: any) => callback(data)
+    ipcRenderer.on('pane:loading', handler)
+    return () => ipcRenderer.removeListener('pane:loading', handler)
   },
   onProfileSwitch: (callback: (profileId: string) => void) => {
     const handler = (_event: any, profileId: string) => callback(profileId)

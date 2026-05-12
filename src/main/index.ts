@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
 import path from 'path'
 import { ProfileStore } from './store'
 import { ViewManager } from './view-manager'
+import type { SplitNode } from '../shared/types'
 
 const { randomUUID } = require('crypto') as { randomUUID: () => string }
 
@@ -12,12 +13,14 @@ const profileStore = new ProfileStore()
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
 function createWindow() {
+  const isWin = process.platform === 'win32'
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: 800,
     minHeight: 600,
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    frame: isWin ? false : undefined,
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : undefined,
     webPreferences: {
       preload: path.join(__dirname, '../preload/shell.js'),
       contextIsolation: true,
@@ -41,6 +44,9 @@ function createWindow() {
   viewManager.setNavStateHandler((profileId, paneId, canGoBack, canGoForward) => {
     mainWindow?.webContents.send('pane:navState', { profileId, paneId, canGoBack, canGoForward })
   })
+  viewManager.setNotificationHandler((profileId, paneId, title, body, icon) => {
+    mainWindow?.webContents.send('notification:received', { profileId, paneId, title, body, icon })
+  })
 
   mainWindow.on('resize', () => {
     viewManager?.updateActiveBounds()
@@ -60,7 +66,7 @@ app.whenReady().then(async () => {
     await viewManager!.createProfile(profile)
   }
   if (profiles.length > 0) {
-    viewManager!.showProfile(profiles[0].id)
+    viewManager!.showProfile(profiles[0].id, profiles[0].splitTree)
   }
 
   registerIpcHandlers()
@@ -86,6 +92,7 @@ function registerIpcHandlers() {
       name: `Profile ${profiles.length + 1}`,
       order: profiles.length,
       panes: [{ id: paneId, url: '' }],
+      splitTree: { type: 'leaf' as const, paneId },
       activePaneId: paneId,
     }
     profileStore.add(newProfile)
@@ -96,7 +103,8 @@ function registerIpcHandlers() {
 
   ipcMain.handle('profile:switch', (_event, profileId: string) => {
     if (!viewManager) return { success: false }
-    viewManager.showProfile(profileId)
+    const profile = profileStore.getProfile(profileId)
+    viewManager.showProfile(profileId, profile?.splitTree)
     return { success: true }
   })
 
@@ -160,12 +168,13 @@ function registerIpcHandlers() {
     profileStore.updatePane(profileId, paneId, { url })
   })
 
-  ipcMain.handle('pane:add', (_event, profileId: string) => {
+  ipcMain.handle('pane:add', (_event, profileId: string, targetPaneId: string, direction: string) => {
     if (!viewManager) return null
     const pane = { id: randomUUID(), url: '' }
-    const added = profileStore.addPane(profileId, pane)
+    const added = profileStore.addPane(profileId, pane, targetPaneId, direction as any)
     if (!added) return null
-    viewManager.addPane(profileId, pane)
+    const profile = profileStore.getProfile(profileId)
+    viewManager.addPane(profileId, pane, profile?.splitTree)
     return pane
   })
 
@@ -173,7 +182,30 @@ function registerIpcHandlers() {
     if (!viewManager) return { success: false }
     await viewManager.removePane(profileId, paneId)
     profileStore.removePane(profileId, paneId)
+    const profile = profileStore.getProfile(profileId)
+    if (profile) {
+      viewManager.updateBoundsFromTree(profileId, profile.splitTree)
+    }
     return { success: true }
+  })
+
+  ipcMain.handle('pane:swap', (_event, profileId: string, paneIdA: string, paneIdB: string) => {
+    const success = profileStore.swapPanes(profileId, paneIdA, paneIdB)
+    if (success && viewManager) {
+      const profile = profileStore.getProfile(profileId)
+      if (profile) {
+        viewManager.updateBoundsFromTree(profileId, profile.splitTree)
+      }
+    }
+    return { success }
+  })
+
+  ipcMain.handle('pane:updateRatio', (_event, profileId: string, path: number[], ratio: number) => {
+    profileStore.updateSplitRatioByPath(profileId, path, ratio)
+    const profile = profileStore.getProfile(profileId)
+    if (profile && viewManager) {
+      viewManager.updateBoundsFromTree(profileId, profile.splitTree)
+    }
   })
 
   ipcMain.handle('pane:setActive', (_event, profileId: string, paneId: string) => {
@@ -188,9 +220,32 @@ function registerIpcHandlers() {
     viewManager?.goForward(profileId, paneId)
   })
 
-  // Sidebar resize
-  ipcMain.on('sidebar:resize', (_event, data: { rightSidebarWidth: number }) => {
-    viewManager?.setRightSidebarWidth(data.rightSidebarWidth)
+  ipcMain.handle('pane:reload', (_event, profileId: string, paneId: string) => {
+    viewManager?.reloadPane(profileId, paneId)
+  })
+
+  // Window controls
+  ipcMain.on('window:minimize', () => mainWindow?.minimize())
+  ipcMain.on('window:maximize', () => {
+    if (mainWindow?.isMaximized()) {
+      mainWindow.unmaximize()
+    } else {
+      mainWindow?.maximize()
+    }
+  })
+  ipcMain.on('window:close', () => mainWindow?.close())
+  ipcMain.handle('window:isMaximized', () => mainWindow?.isMaximized() ?? false)
+
+  // View management
+  ipcMain.on('view:hideAll', () => {
+    viewManager?.hideAllViews()
+  })
+  ipcMain.on('view:showProfile', (_event, profileId: string) => {
+    if (!viewManager) return
+    const profile = profileStore.getProfile(profileId)
+    if (profile) {
+      viewManager.showProfile(profileId, profile.splitTree)
+    }
   })
 
   // Quick Text CRUD

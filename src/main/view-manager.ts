@@ -1,7 +1,9 @@
 import { BrowserWindow, WebContentsView, session } from 'electron'
 import path from 'path'
-import { Profile, Pane } from './store'
-import { SIDEBAR_WIDTH, ADDRESS_BAR_HEIGHT } from '../shared/constants'
+import { Pane } from './store'
+import { SIDEBAR_WIDTH, ADDRESS_BAR_HEIGHT, TOOLBAR_HEIGHT, PANE_GAP } from '../shared/constants'
+import { SplitNode } from '../shared/types'
+import { calculateBounds, Rect } from '../shared/split-tree'
 
 const CHROME_UA_MAC =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
@@ -16,17 +18,13 @@ export class ViewManager {
   private win: BrowserWindow
   private paneViews: Map<string, Map<string, WebContentsView>> = new Map()
   private activeProfileId: string | null = null
-  private rightSidebarWidth: number = 36
+  private activeSplitTree: SplitNode | null = null
   private onUrlChanged: ((profileId: string, paneId: string, url: string) => void) | null = null
   private onNavState: ((profileId: string, paneId: string, canGoBack: boolean, canGoForward: boolean) => void) | null = null
+  private onNotification: ((profileId: string, paneId: string, title: string, body: string, icon?: string) => void) | null = null
 
   constructor(win: BrowserWindow) {
     this.win = win
-  }
-
-  setRightSidebarWidth(width: number): void {
-    this.rightSidebarWidth = width
-    this.updateActiveBounds()
   }
 
   setUrlChangedHandler(handler: (profileId: string, paneId: string, url: string) => void): void {
@@ -37,7 +35,11 @@ export class ViewManager {
     this.onNavState = handler
   }
 
-  async createProfile(profile: Profile): Promise<void> {
+  setNotificationHandler(handler: (profileId: string, paneId: string, title: string, body: string, icon?: string) => void): void {
+    this.onNotification = handler
+  }
+
+  async createProfile(profile: { id: string; panes: Pane[] }): Promise<void> {
     const profileViews = new Map<string, WebContentsView>()
     this.paneViews.set(profile.id, profileViews)
 
@@ -65,6 +67,7 @@ export class ViewManager {
 
     this.win.contentView.addChildView(view)
     view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+    view.setBorderRadius(7)
 
     if (pane.url) {
       view.webContents.loadURL(pane.url)
@@ -78,10 +81,36 @@ export class ViewManager {
       this.emitNavEvents(profileId, pane.id, view)
     })
 
+    // Inject minimal scrollbar CSS into every page
+    view.webContents.on('did-finish-load', () => {
+      view.webContents.insertCSS(`
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.25); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(128,128,128,0.45); }
+        ::-webkit-scrollbar-corner { background: transparent; }
+      `)
+    })
+
+    // Track loading state
+    view.webContents.on('did-start-loading', () => {
+      this.win.webContents.send('pane:loading', { profileId, paneId: pane.id, loading: true })
+    })
+    view.webContents.on('did-stop-loading', () => {
+      this.win.webContents.send('pane:loading', { profileId, paneId: pane.id, loading: false })
+    })
+
     // Handle window.open — load in same view
     view.webContents.setWindowOpenHandler(({ url }) => {
       view.webContents.loadURL(url)
       return { action: 'deny' }
+    })
+
+    // Listen for notification IPC from pane preload
+    view.webContents.ipc.on('pane:notification', (_event, data: { title: string; body: string; icon?: string }) => {
+      if (this.onNotification) {
+        this.onNotification(profileId, pane.id, data.title, data.body, data.icon)
+      }
     })
 
     return view
@@ -97,7 +126,17 @@ export class ViewManager {
     }
   }
 
-  showProfile(profileId: string): void {
+  private getRootRect(): Rect {
+    const [windowWidth, windowHeight] = this.win.getContentSize()
+    return {
+      x: SIDEBAR_WIDTH,
+      y: TOOLBAR_HEIGHT,
+      width: windowWidth - SIDEBAR_WIDTH,
+      height: windowHeight - TOOLBAR_HEIGHT,
+    }
+  }
+
+  showProfile(profileId: string, splitTree?: SplitNode): void {
     // Hide current active profile views
     if (this.activeProfileId && this.activeProfileId !== profileId) {
       const currentViews = this.paneViews.get(this.activeProfileId)
@@ -109,34 +148,41 @@ export class ViewManager {
     }
 
     this.activeProfileId = profileId
+    if (splitTree) {
+      this.activeSplitTree = splitTree
+    }
     this.updateActiveBounds()
   }
 
   updateActiveBounds(): void {
-    if (!this.activeProfileId) return
+    if (!this.activeProfileId || !this.activeSplitTree) return
     const views = this.paneViews.get(this.activeProfileId)
     if (!views || views.size === 0) return
 
-    const [windowWidth, windowHeight] = this.win.getContentSize()
-    const totalWidth = windowWidth - SIDEBAR_WIDTH - this.rightSidebarWidth
-    const paneCount = views.size
-    const paneWidth = Math.floor(totalWidth / paneCount)
+    const rootRect = this.getRootRect()
+    const bounds = calculateBounds(this.activeSplitTree, rootRect)
 
-    let index = 0
-    for (const view of views.values()) {
-      const isLast = index === paneCount - 1
-      const width = isLast ? totalWidth - index * paneWidth : paneWidth
-      view.setBounds({
-        x: SIDEBAR_WIDTH + index * paneWidth,
-        y: ADDRESS_BAR_HEIGHT,
-        width: Math.max(0, width),
-        height: Math.max(0, windowHeight - ADDRESS_BAR_HEIGHT),
-      })
-      index++
+    for (const [paneId, rect] of bounds) {
+      const view = views.get(paneId)
+      if (view) {
+        view.setBounds({
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          width: Math.max(0, Math.round(rect.width)),
+          height: Math.max(0, Math.round(rect.height)),
+        })
+      }
     }
   }
 
-  async addPane(profileId: string, pane: Pane): Promise<WebContentsView> {
+  updateBoundsFromTree(profileId: string, splitTree: SplitNode): void {
+    if (this.activeProfileId === profileId) {
+      this.activeSplitTree = splitTree
+      this.updateActiveBounds()
+    }
+  }
+
+  async addPane(profileId: string, pane: Pane, splitTree?: SplitNode): Promise<WebContentsView> {
     let profileViews = this.paneViews.get(profileId)
     if (!profileViews) {
       profileViews = new Map()
@@ -146,7 +192,8 @@ export class ViewManager {
     const view = this.createPaneView(profileId, pane)
     profileViews.set(pane.id, view)
 
-    if (this.activeProfileId === profileId) {
+    if (this.activeProfileId === profileId && splitTree) {
+      this.activeSplitTree = splitTree
       this.updateActiveBounds()
     }
 
@@ -163,10 +210,19 @@ export class ViewManager {
     view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
     this.win.contentView.removeChildView(view)
     profileViews.delete(paneId)
+  }
 
-    if (this.activeProfileId === profileId) {
-      this.updateActiveBounds()
+  hideAllViews(): void {
+    if (!this.activeProfileId) return
+    const views = this.paneViews.get(this.activeProfileId)
+    if (!views) return
+    for (const view of views.values()) {
+      view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
     }
+  }
+
+  showProfileViews(): void {
+    this.updateActiveBounds()
   }
 
   navigatePane(profileId: string, paneId: string, url: string): void {
@@ -189,6 +245,13 @@ export class ViewManager {
     }
   }
 
+  reloadPane(profileId: string, paneId: string): void {
+    const view = this.paneViews.get(profileId)?.get(paneId)
+    if (view) {
+      view.webContents.reload()
+    }
+  }
+
   async destroyProfile(profileId: string): Promise<void> {
     const profileViews = this.paneViews.get(profileId)
     if (!profileViews) return
@@ -208,6 +271,7 @@ export class ViewManager {
 
     if (this.activeProfileId === profileId) {
       this.activeProfileId = null
+      this.activeSplitTree = null
     }
   }
 
@@ -219,7 +283,6 @@ export class ViewManager {
     if (!this.activeProfileId) return undefined
     const profileViews = this.paneViews.get(this.activeProfileId)
     if (!profileViews) return undefined
-    // Return the first view (active pane concept is managed by store, here we just pick first)
     return profileViews.values().next().value
   }
 }

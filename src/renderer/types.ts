@@ -1,22 +1,5 @@
-export interface Pane {
-  id: string
-  url: string
-}
-
-export interface Profile {
-  id: string
-  name: string
-  order: number
-  panes: Pane[]
-  activePaneId: string
-}
-
-export interface QuickText {
-  id: string
-  label: string
-  text: string
-  order: number
-}
+export type { Pane, Profile, QuickText, SplitNode, SplitDirection, NotificationItem } from '../shared/types'
+import type { Pane, Profile, SplitDirection } from '../shared/types'
 
 export interface ElectronAPI {
   // Profiles
@@ -30,25 +13,32 @@ export interface ElectronAPI {
 
   // Panes
   navigatePane(profileId: string, paneId: string, url: string): Promise<void>
-  addPane(profileId: string): Promise<Pane | null>
+  addPane(profileId: string, targetPaneId: string, direction: SplitDirection): Promise<Pane | null>
   removePane(profileId: string, paneId: string): Promise<{ success: boolean }>
   setActivePane(profileId: string, paneId: string): Promise<void>
   goBack(profileId: string, paneId: string): Promise<void>
   goForward(profileId: string, paneId: string): Promise<void>
+  reloadPane(profileId: string, paneId: string): Promise<void>
+  swapPanes(profileId: string, paneIdA: string, paneIdB: string): Promise<{ success: boolean }>
+  updateSplitRatio(profileId: string, path: number[], ratio: number): Promise<void>
 
-  // Sidebar
-  resizeSidebar(data: { rightSidebarWidth: number }): void
+  // Window controls
+  windowMinimize(): void
+  windowMaximize(): void
+  windowClose(): void
+  windowIsMaximized(): Promise<boolean>
 
-  // Quick Text
-  quickTextGetAll(): Promise<QuickText[]>
-  quickTextAdd(label: string, text: string): Promise<QuickText>
-  quickTextUpdate(id: string, data: Partial<{ label: string; text: string }>): Promise<void>
-  quickTextRemove(id: string): Promise<void>
-  quickTextInject(text: string): Promise<{ success: boolean; error?: string }>
+  // View management
+  hideAllViews(): void
+  showProfileViews(profileId: string): void
+
+  // Notifications
+  onNotification(callback: (data: { profileId: string; paneId: string; title: string; body: string; icon?: string }) => void): () => void
 
   // Events
   onPaneUrlChanged(callback: (data: { profileId: string; paneId: string; url: string }) => void): () => void
   onPaneNavState(callback: (data: { profileId: string; paneId: string; canGoBack: boolean; canGoForward: boolean }) => void): () => void
+  onPaneLoading(callback: (data: { profileId: string; paneId: string; loading: boolean }) => void): () => void
   onProfileSwitch(callback: (profileId: string) => void): () => void
 }
 
